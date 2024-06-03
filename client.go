@@ -23,6 +23,14 @@ func New(options ...RequestOptions) *Client {
 	return c
 }
 
+// NewCustom returns a reusable client with a custom defined *http.Client
+// This is useful in scenarios where you want to change any configurations for the http.Client
+func NewCustom(client *http.Client, options ...RequestOptions) *Client {
+	c := New(options...)
+	c.client = client
+	return c
+}
+
 // GetGlobalOptions returns the global RequestOptions of the client.
 func (c *Client) GetGlobalOptions() RequestOptions {
 	return c.global
