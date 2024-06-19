@@ -3,13 +3,26 @@ package client
 import (
 	"fmt"
 	"net/http"
+	"strings"
+)
+
+type CompressionType string
+
+const (
+	CompressionNone    CompressionType = ""
+	CompressionGzip    CompressionType = "gzip"
+	CompressionDeflate CompressionType = "deflate"
+	CompressionBrotli  CompressionType = "br"
+	// Add other compression types as needed
 )
 
 // RequestOptions represents additional options for the HTTP request.
 type RequestOptions struct {
 	Headers        []Header       // Custom headers to be added to the request.
 	Cookies        []*http.Cookie // Cookies to be included in the request.
-	ProtocolScheme string
+	ProtocolScheme string         // define a custom protocol scheme. It defaults to https
+	Compression    CompressionType
+	UserAgent      string
 }
 
 // AddHeader adds a new header to the RequestOptions.
@@ -44,4 +57,15 @@ func (opt *RequestOptions) ListCookies() {
 // ClearCookies clears all cookies in the RequestOptions.
 func (opt *RequestOptions) ClearCookies() {
 	opt.Cookies = nil
+}
+
+func (opt *RequestOptions) SetProtocolScheme(scheme string) {
+	if !strings.Contains(scheme, "://") {
+		scheme += "://"
+	}
+	opt.ProtocolScheme = scheme
+}
+
+func (opt *RequestOptions) Compress(compressionType CompressionType) {
+	opt.Compression = compressionType
 }

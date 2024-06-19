@@ -23,6 +23,7 @@ type Response struct {
 	Header           http.Header    // HTTP headers of the response.
 	ContentLength    int64
 	TransferEncoding []string // Transfer encoding of the response
+	CompressionType  CompressionType
 	Uncompressed     bool
 	Cookies          []*http.Cookie // Cookies received in the response.
 	AccessTime       time.Duration  // Time taken to complete the request.

@@ -2,11 +2,15 @@ package client
 
 import (
 	"bytes"
+	"compress/gzip"
+	"compress/zlib"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/andybalholm/brotli"
 	"github.com/google/uuid"
 )
 
@@ -24,29 +28,70 @@ func doRequest(client *http.Client, method string, url string, payload []byte, o
 		opt = options[0]
 	}
 
-	// Check if there is a pre-defined protocol scheme, else default to http://
+	// Check if there is a pre-defined protocol scheme, else default to https://
 	if opt.ProtocolScheme != "" {
+		// Clean the protocol scheme prior to add in the new one
+		// This can be used to force http:// over https://
+		url = strings.TrimPrefix(url, "http://")
+		url = strings.TrimPrefix(url, "https://")
+		if !strings.Contains(opt.ProtocolScheme, "://") {
+			opt.ProtocolScheme += "://"
+		}
 		if !strings.HasPrefix(url, opt.ProtocolScheme) {
 			url = opt.ProtocolScheme + url
 		}
+		fmt.Print("non-default protocol updated: ", url)
 	} else {
-		if !strings.HasPrefix(url, "https://") {
+		if !strings.HasPrefix(url, "http://") || !strings.HasPrefix(url, "https://") {
+			url = strings.TrimPrefix(url, "http://")
 			url = "https://" + url
+			fmt.Println("protocol updated:", url)
 		}
 	}
 
+	// Adjust the UserAgent
+	if opt.UserAgent == "" {
+		opt.UserAgent = "caelisco/client/1.1"
+	}
+	opt.AddHeader("User-Agent", opt.UserAgent)
+
 	response := Response{
-		UUID:           uuid.New(),
-		URL:            url,
-		Method:         method,
-		RequestPayload: payload,
-		Options:        opt,
+		UUID:            uuid.New(),
+		URL:             url,
+		Method:          method,
+		RequestPayload:  payload,
+		Options:         opt,
+		CompressionType: opt.Compression,
 	}
 
 	var r *http.Response
 	var requestPayload io.Reader
 	if len(payload) > 0 {
-		requestPayload = bytes.NewBuffer(payload)
+		if opt.Compression != CompressionNone {
+			var cbody bytes.Buffer
+			var writer io.Writer
+			switch opt.Compression {
+			case CompressionGzip:
+				writer = gzip.NewWriter(&cbody)
+			case CompressionDeflate:
+				writer = zlib.NewWriter(&cbody)
+			case CompressionBrotli:
+				writer = brotli.NewWriter(&cbody)
+			default:
+				return response, fmt.Errorf("unsupported compression type: %s", opt.Compression)
+			}
+			_, err := writer.Write(payload)
+			if err != nil {
+				return response, err
+			}
+			if closer, ok := writer.(io.Closer); ok {
+				closer.Close()
+			}
+			requestPayload = &cbody
+			opt.AddHeader("Content-Encoding", string(opt.Compression))
+		} else {
+			requestPayload = bytes.NewBuffer(payload)
+		}
 	}
 
 	request, err := http.NewRequest(method, url, requestPayload)
@@ -55,15 +100,19 @@ func doRequest(client *http.Client, method string, url string, payload []byte, o
 		return response, err
 	}
 
+	// Assign headers from the RequestOptions
 	for _, h := range opt.Headers {
 		request.Header.Set(h.Key, h.Value)
 	}
 
+	// Assign cookies from the RequestOptions
 	for _, c := range opt.Cookies {
 		request.AddCookie(c)
 	}
 
 	response.RequestTime = time.Now().Unix()
+
+	// Perform the actual request
 	r, err = client.Do(request)
 	if err != nil {
 		response.Error = err
