@@ -40,12 +40,9 @@ func doRequest(client *http.Client, method string, url string, payload []byte, o
 		if !strings.HasPrefix(url, opt.ProtocolScheme) {
 			url = opt.ProtocolScheme + url
 		}
-		fmt.Print("non-default protocol updated: ", url)
 	} else {
-		if !strings.HasPrefix(url, "http://") || !strings.HasPrefix(url, "https://") {
-			url = strings.TrimPrefix(url, "http://")
+		if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
 			url = "https://" + url
-			fmt.Println("protocol updated:", url)
 		}
 	}
 
