@@ -17,16 +17,23 @@ const (
 )
 
 // RequestOptions represents additional options for the HTTP request.
+//
+// DisableRedirect - Determines if redirects should be followed or not. The default option is
+// false which means redirects will be followed.
 type RequestOptions struct {
-	Headers        []Header       // Custom headers to be added to the request.
-	Cookies        []*http.Cookie // Cookies to be included in the request.
-	ProtocolScheme string         // define a custom protocol scheme. It defaults to https
-	Compression    CompressionType
-	UserAgent      string
+	Headers         []Header        // Custom headers to be added to the request.
+	Cookies         []*http.Cookie  // Cookies to be included in the request.
+	ProtocolScheme  string          // define a custom protocol scheme. It defaults to https
+	Compression     CompressionType // CompressionType to use: none, gzip, deflate or brotli
+	UserAgent       string          // User Agent to send with requests
+	DisableRedirect bool            // Disable or enable redirects. Default is false - do not disable redirects
 }
 
 // AddHeader adds a new header to the RequestOptions.
 func (opt *RequestOptions) AddHeader(key string, value string) {
+	if opt.Headers == nil {
+		opt.Headers = []Header{}
+	}
 	opt.Headers = append(opt.Headers, Header{Key: key, Value: value})
 }
 
@@ -44,6 +51,9 @@ func (opt *RequestOptions) ClearHeaders() {
 
 // AddCookie adds a new cookie to the RequestOptions.
 func (opt *RequestOptions) AddCookie(cookie *http.Cookie) {
+	if opt.Cookies == nil {
+		opt.Cookies = []*http.Cookie{}
+	}
 	opt.Cookies = append(opt.Cookies, cookie)
 }
 
@@ -68,4 +78,12 @@ func (opt *RequestOptions) SetProtocolScheme(scheme string) {
 
 func (opt *RequestOptions) Compress(compressionType CompressionType) {
 	opt.Compression = compressionType
+}
+
+func (opt *RequestOptions) DisableRedirects() bool {
+	return true
+}
+
+func (opt *RequestOptions) EnableRedirects() bool {
+	return false
 }

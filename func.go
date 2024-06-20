@@ -15,7 +15,9 @@ import (
 )
 
 // A global default client is used for all of the method-based requests.
-var client = http.DefaultClient
+var client = &http.Client{
+	Timeout: 30 * time.Second, // Set an appropriate timeout
+}
 
 // doRequest performs the actual underlying HTTP request. RequestOptions are optional.
 // If no protocol scheme is detected, it will automatically upgrade to https://
@@ -107,15 +109,32 @@ func doRequest(client *http.Client, method string, url string, payload []byte, o
 		request.AddCookie(c)
 	}
 
+	// Configure the HTTP client to follow or not follow redirects
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if opt.DisableRedirect {
+			return http.ErrUseLastResponse
+		}
+		return nil
+	}
+
 	response.RequestTime = time.Now().Unix()
 
 	// Perform the actual request
 	r, err = client.Do(request)
+
 	if err != nil {
 		response.Error = err
 		return response, err
 	}
 	defer r.Body.Close()
+
+	response.ResponseTime = time.Now().Unix()
+
+	// Check if the request was redirected
+	if len(r.Request.URL.String()) != len(response.URL) {
+		response.Redirected = true
+		response.Location = r.Request.URL.String()
+	}
 
 	// request has completed, add details to the response object
 	response.Status = r.Status
@@ -129,7 +148,11 @@ func doRequest(client *http.Client, method string, url string, payload []byte, o
 	response.Uncompressed = r.Uncompressed
 	response.TLS = r.TLS
 
-	// convert the http.Response.Body to []byte
+	// convert the http.Response.Body to a bytes.Buffer
+	// bytes.Buffer was a preferred choice because I found it to be more flexible than
+	// returning []]byte
+	// To retrieve a string: response.Body.String()
+	// To retrieve a []byte: response.Body.Bytes()
 	_, err = io.Copy(&response.Body, r.Body)
 	if err != nil {
 		response.Error = err

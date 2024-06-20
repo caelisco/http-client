@@ -17,6 +17,7 @@ type Response struct {
 	RequestPayload   []byte         // Payload of the request.
 	Options          RequestOptions // Additional options for the request.
 	RequestTime      int64          // The time when the request was made
+	ResponseTime     int64          // The time when the response was received
 	Status           string         // Status of the HTTP response.
 	StatusCode       int            // HTTP status code of the response.
 	Proto            string         // HTTP protocol used.
@@ -30,6 +31,8 @@ type Response struct {
 	Body             bytes.Buffer   // Response body as bytes.
 	Error            error          // Error encountered during the request.
 	TLS              *tls.ConnectionState
+	Redirected       bool
+	Location         string
 }
 
 func (r *Response) Retry(c ...http.Client) (Response, error) {
