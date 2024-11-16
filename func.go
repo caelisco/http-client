@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/andybalholm/brotli"
+	"github.com/caelisco/http-client/request"
 	"github.com/google/uuid"
 )
 
@@ -22,7 +23,7 @@ var client = &http.Client{
 // doRequest performs the actual underlying HTTP request. RequestOptions are optional.
 // If no protocol scheme is detected, it will automatically upgrade to https://
 // Use RequestOptions.ProtocolScheme to define a different protocol
-func doRequest(client *http.Client, method string, url string, payload []byte, options ...RequestOptions) (Response, error) {
+func doRequest(client *http.Client, method string, url string, payload []byte, options ...request.Options) (Response, error) {
 	start := time.Now()
 
 	var opt RequestOptions
@@ -66,15 +67,15 @@ func doRequest(client *http.Client, method string, url string, payload []byte, o
 	var r *http.Response
 	var requestPayload io.Reader
 	if len(payload) > 0 {
-		if opt.Compression != CompressionNone {
+		if opt.Compression != request.CompressionNone {
 			var cbody bytes.Buffer
 			var writer io.Writer
 			switch opt.Compression {
-			case CompressionGzip:
+			case request.CompressionGzip:
 				writer = gzip.NewWriter(&cbody)
-			case CompressionDeflate:
+			case request.CompressionDeflate:
 				writer = zlib.NewWriter(&cbody)
-			case CompressionBrotli:
+			case request.CompressionBrotli:
 				writer = brotli.NewWriter(&cbody)
 			default:
 				return response, fmt.Errorf("unsupported compression type: %s", opt.Compression)

@@ -2,6 +2,8 @@ package client
 
 import (
 	"net/http"
+
+	"github.com/caelisco/http-client/kv"
 )
 
 // Client represents an HTTP client.
@@ -45,7 +47,7 @@ func (c *Client) UpdateGlobalOptions(options RequestOptions) {
 func (c *Client) CloneGlobalOptions() RequestOptions {
 	opt := RequestOptions{}
 	// Create a new slice and copy the elements to the new slice
-	opt.Headers = make([]Header, len(c.global.Headers))
+	opt.Headers = make([]kv.Header, len(c.global.Headers))
 	copy(opt.Headers, c.global.Headers)
 	opt.Cookies = make([]*http.Cookie, len(c.global.Cookies))
 	copy(opt.Cookies, c.global.Cookies)
@@ -182,4 +184,8 @@ func (c *Client) Trace(url string, opt ...RequestOptions) (Response, error) {
 // Returns the HTTP response and an error if any.
 func (c *Client) Custom(method string, url string, payload []byte, opt ...RequestOptions) (Response, error) {
 	return c.doRequest(method, url, payload, opt...)
+}
+
+func (c *Client) Responses() []Response {
+	return c.responses
 }
