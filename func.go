@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/andybalholm/brotli"
+	"github.com/caelisco/http-client/form"
 	"github.com/caelisco/http-client/request"
 	"github.com/google/uuid"
 )
@@ -163,7 +164,7 @@ func doRequest(client *http.Client, method string, url string, payload []byte, o
 	return response, nil
 }
 
-// Get performs an HTTP GET request to the specified URL.
+// Get performs an HTTP GET to the specified URL.
 // It accepts the URL string as its first argument.
 // Optionally, you can provide additional RequestOptions to customize the request.
 // Returns the HTTP response and an error if any.
@@ -171,7 +172,7 @@ func Get(url string, opt ...RequestOptions) (Response, error) {
 	return doRequest(client, http.MethodGet, url, nil, opt...)
 }
 
-// Post performs an HTTP POST request to the specified URL with the given payload.
+// Post performs an HTTP POST to the specified URL with the given payload.
 // It accepts the URL string as its first argument and the payload as the second argument.
 // Optionally, you can provide additional RequestOptions to customize the request.
 // Returns the HTTP response and an error if any.
@@ -179,7 +180,24 @@ func Post(url string, payload []byte, opt ...RequestOptions) (Response, error) {
 	return doRequest(client, http.MethodPost, url, payload, opt...)
 }
 
-// Put performs an HTTP PUT request to the specified URL with the given payload.
+// FormPost performs an HTTP POST as an x-www-form-urlencoded payload to the specified URL.
+// It accepts the URL string as its first argument and a map[string]string the payload.
+// The map is converted to a url.QueryEscaped k/v pair that is sent to the server.
+// Optionally, you can provide additional RequestOptions to customize the request.
+// Returns the HTTP response and an error if any.
+func FormPost(url string, payload map[string]string, opt ...RequestOptions) (Response, error) {
+	switch len(opt) {
+	case 0:
+		option := RequestOptions{}
+		option.AddHeader("Content-Type", "application/x-www-form-urlencoded")
+		opt = append(opt, option)
+	case 1:
+		opt[0].AddHeader("Content-Type", "application/x-www-form-urlencoded")
+	}
+	return doRequest(client, http.MethodPost, url, form.Encode(payload), opt...)
+}
+
+// Put performs an HTTP PUT to the specified URL with the given payload.
 // It accepts the URL string as its first argument and the payload as the second argument.
 // Optionally, you can provide additional RequestOptions to customize the request.
 // Returns the HTTP response and an error if any.
@@ -187,7 +205,7 @@ func Put(url string, payload []byte, opt ...RequestOptions) (Response, error) {
 	return doRequest(client, http.MethodPut, url, payload, opt...)
 }
 
-// Patch performs an HTTP PATCH request to the specified URL with the given payload.
+// Patch performs an HTTP PATCH to the specified URL with the given payload.
 // It accepts the URL string as its first argument and the payload as the second argument.
 // Optionally, you can provide additional RequestOptions to customize the request.
 // Returns the HTTP response and an error if any.
@@ -195,7 +213,7 @@ func Patch(url string, payload []byte, opt ...RequestOptions) (Response, error) 
 	return doRequest(client, http.MethodPatch, url, payload, opt...)
 }
 
-// Delete performs an HTTP DELETE request to the specified URL.
+// Delete performs an HTTP DELETE to the specified URL.
 // It accepts the URL string as its first argument.
 // Optionally, you can provide additional RequestOptions to customize the request.
 // Returns the HTTP response and an error if any.
@@ -203,7 +221,7 @@ func Delete(url string, opt ...RequestOptions) (Response, error) {
 	return doRequest(client, http.MethodDelete, url, nil, opt...)
 }
 
-// Connect performs an HTTP CONNECT request to the specified URL.
+// Connect performs an HTTP CONNECT to the specified URL.
 // It accepts the URL string as its first argument.
 // Optionally, you can provide additional RequestOptions to customize the request.
 // Returns the HTTP response and an error if any.
@@ -211,7 +229,7 @@ func Connect(url string, opt ...RequestOptions) (Response, error) {
 	return doRequest(client, http.MethodConnect, url, nil, opt...)
 }
 
-// Head performs an HTTP HEAD request to the specified URL.
+// Head performs an HTTP HEAD to the specified URL.
 // It accepts the URL string as its first argument.
 // Optionally, you can provide additional RequestOptions to customize the request.
 // Returns the HTTP response and an error if any.
@@ -219,7 +237,7 @@ func Head(url string, opt ...RequestOptions) (Response, error) {
 	return doRequest(client, http.MethodHead, url, nil, opt...)
 }
 
-// Options performs an HTTP OPTIONS request to the specified URL.
+// Options performs an HTTP OPTIONS to the specified URL.
 // It accepts the URL string as its first argument.
 // Optionally, you can provide additional RequestOptions to customize the request.
 // Returns the HTTP response and an error if any.
@@ -227,7 +245,7 @@ func Options(url string, opt ...RequestOptions) (Response, error) {
 	return doRequest(client, http.MethodHead, url, nil, opt...)
 }
 
-// Trace performs an HTTP TRACE request to the specified URL.
+// Trace performs an HTTP TRACE to the specified URL.
 // It accepts the URL string as its first argument.
 // Optionally, you can provide additional RequestOptions to customize the request.
 // Returns the HTTP response and an error if any.
@@ -235,7 +253,7 @@ func Trace(url string, opt ...RequestOptions) (Response, error) {
 	return doRequest(client, http.MethodTrace, url, nil, opt...)
 }
 
-// Custom performs a custom HTTP request method to the specified URL with the given payload.
+// Custom performs a custom HTTP method to the specified URL with the given payload.
 // It accepts the HTTP method as its first argument, the URL string as the second argument,
 // the payload as the third argument, and optionally additional RequestOptions to customize the request.
 // Returns the HTTP response and an error if any.
