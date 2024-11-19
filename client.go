@@ -5,6 +5,7 @@ import (
 
 	"github.com/caelisco/http-client/form"
 	"github.com/caelisco/http-client/kv"
+	"github.com/caelisco/http-client/request"
 )
 
 // Client represents an HTTP client.
@@ -20,7 +21,10 @@ func New(options ...RequestOptions) *Client {
 	c := &Client{
 		client: &http.Client{},
 	}
-	if len(options) > 0 {
+	// if no options are passed through, use the defaults
+	if len(options) == 0 {
+		c.global = request.NewOptions()
+	} else {
 		c.global = options[0]
 	}
 	return c
@@ -37,6 +41,11 @@ func NewCustom(client *http.Client, options ...RequestOptions) *Client {
 // GetGlobalOptions returns the global RequestOptions of the client.
 func (c *Client) GetGlobalOptions() RequestOptions {
 	return c.global
+}
+
+// AddGlobalOptions adds the provided options to the client's global options
+func (c *Client) AddGlobalOptions(options RequestOptions) {
+	mergeOptions(&c.global, options)
 }
 
 // UpdateGlobalOptions updates the global RequestOptions of the client.
@@ -61,46 +70,24 @@ func (c *Client) Clear() {
 	c.responses = nil
 }
 
-// doRequest performs an HTTP request with specified method, URL, payload, and options.
+// Responses returns a slice of responses made by this Client
+func (c *Client) Responses() []Response {
+	return c.responses
+}
+
 func (c *Client) doRequest(method string, url string, payload []byte, options ...RequestOptions) (Response, error) {
-	// Clone global options so that we do not overwrite them with each subsequent request.
+	// Clone global options so that we do not overwrite them with each subsequent request
 	opt := c.CloneGlobalOptions()
 
 	// Merge the local RequestOptions with the global RequestOptions
-	if len(options) > 0 {
-		// Local headers take priority over global headers
-		for _, lh := range options[0].Headers {
-			found := false
-			for i, oh := range opt.Headers {
-				if oh.Key == lh.Key {
-					opt.Headers[i] = lh
-					found = true
-					break
-				}
-			}
-			if !found {
-				opt.Headers = append(opt.Headers, lh)
-			}
-		}
-
-		// Local cookies take priority over global cookies
-		for _, lc := range options[0].Cookies {
-			found := false
-			for i, oc := range opt.Cookies {
-				if oc.Name == lc.Name {
-					opt.Cookies[i] = lc
-					found = true
-					break
-				}
-			}
-			if !found {
-				opt.Cookies = append(opt.Cookies, lc)
-			}
-		}
+	if len(options) == 0 {
+		opt = request.NewOptions()
+	} else {
+		mergeOptions(&opt, options[0])
 	}
 
-	// Perform the request with the merged RequestOptions
-	response, err := doRequest(c.client, method, url, payload, append([]RequestOptions{opt}, options...)...)
+	// Perform the request with the merged options
+	response, err := doRequest(c.client, method, url, payload, opt)
 
 	// Keep the response
 	c.responses = append(c.responses, response)
@@ -204,7 +191,55 @@ func (c *Client) Custom(method string, url string, payload []byte, opt ...Reques
 	return c.doRequest(method, url, payload, opt...)
 }
 
-// Responses returns a slice of responses made by this Client
-func (c *Client) Responses() []Response {
-	return c.responses
+// mergeOptions merges source options into target options, with source taking priority
+func mergeOptions(dest *RequestOptions, src RequestOptions) {
+
+	// Merge headers
+	for _, sh := range src.Headers {
+		found := false
+		for i, th := range dest.Headers {
+			if th.Key == sh.Key {
+				dest.Headers[i] = sh
+				found = true
+				break
+			}
+		}
+		if !found {
+			dest.Headers = append(dest.Headers, sh)
+		}
+	}
+
+	// Merge cookies
+	for _, sc := range src.Cookies {
+		found := false
+		for i, tc := range dest.Cookies {
+			if tc.Name == sc.Name {
+				dest.Cookies[i] = sc
+				found = true
+				break
+			}
+		}
+		if !found {
+			dest.Cookies = append(dest.Cookies, sc)
+		}
+	}
+
+	// Merge other fields, source takes priority if not empty
+	if src.UniqueIdentifier != "" {
+		dest.UniqueIdentifier = src.UniqueIdentifier
+	}
+	if src.Compression != "" {
+		dest.Compression = src.Compression
+	}
+	if src.UserAgent != "" {
+		dest.UserAgent = src.UserAgent
+	}
+	if src.ProtocolScheme != "" {
+		dest.ProtocolScheme = src.ProtocolScheme
+	}
+	// DisableRedirect is a boolean, so we always take the source value
+	dest.DisableRedirect = src.DisableRedirect
+	if src.Writer != nil {
+		dest.Writer = src.Writer
+	}
 }

@@ -13,8 +13,9 @@ import (
 	"github.com/andybalholm/brotli"
 	"github.com/caelisco/http-client/form"
 	"github.com/caelisco/http-client/request"
-	"github.com/google/uuid"
 )
+
+const useragent = "caelisco/http-client/v0.4.0"
 
 // A global default client is used for all of the method-based requests.
 var client = &http.Client{
@@ -27,8 +28,11 @@ var client = &http.Client{
 func doRequest(client *http.Client, method string, url string, payload []byte, options ...request.Options) (Response, error) {
 	start := time.Now()
 
+	// If no request.Options was passed through, create a default instance
 	var opt RequestOptions
-	if len(options) > 0 {
+	if len(options) == 0 {
+		opt = request.NewOptions()
+	} else {
 		opt = options[0]
 	}
 
@@ -52,25 +56,29 @@ func doRequest(client *http.Client, method string, url string, payload []byte, o
 
 	// Adjust the UserAgent
 	if opt.UserAgent == "" {
-		opt.UserAgent = "caelisco/client/1.1"
+		opt.UserAgent = useragent
 	}
 	opt.AddHeader("User-Agent", opt.UserAgent)
 
+	// build the initial Response object
 	response := Response{
-		UUID:            uuid.New(),
-		URL:             url,
-		Method:          method,
-		RequestPayload:  payload,
-		Options:         opt,
-		CompressionType: opt.Compression,
+		UniqueIdentifier: opt.GenerateIdentifier(),
+		URL:              url,
+		Method:           method,
+		RequestPayload:   payload,
+		Options:          opt,
+		CompressionType:  opt.Compression,
 	}
 
 	var r *http.Response
 	var requestPayload io.Reader
+	// Assuming there is a payload, check the options to see if compression is required
+	// Apply the compression to the payload and set the appropriate header to inform
+	// the server it is receiving compressed data
 	if len(payload) > 0 {
 		if opt.Compression != request.CompressionNone {
 			var cbody bytes.Buffer
-			var writer io.Writer
+			var writer io.WriteCloser
 			switch opt.Compression {
 			case request.CompressionGzip:
 				writer = gzip.NewWriter(&cbody)
@@ -85,9 +93,7 @@ func doRequest(client *http.Client, method string, url string, payload []byte, o
 			if err != nil {
 				return response, err
 			}
-			if closer, ok := writer.(io.Closer); ok {
-				closer.Close()
-			}
+			writer.Close()
 			requestPayload = &cbody
 			opt.AddHeader("Content-Encoding", string(opt.Compression))
 		} else {
@@ -121,6 +127,14 @@ func doRequest(client *http.Client, method string, url string, payload []byte, o
 
 	response.RequestTime = time.Now().Unix()
 
+	// To prevent out of memory if a very large payload is provided we can stream the bytes to a file
+	// or any data structure that implements the io.Writer interface.
+	// This is set in request.Options Writer
+	var writer io.Writer = &response.Body
+	if opt.Writer != nil {
+		writer = opt.Writer
+	}
+
 	// Perform the actual request
 	r, err = client.Do(request)
 
@@ -131,6 +145,26 @@ func doRequest(client *http.Client, method string, url string, payload []byte, o
 	defer r.Body.Close()
 
 	response.ResponseTime = time.Now().Unix()
+
+	// convert the http.Response.Body to a bytes.Buffer
+	// bytes.Buffer was a preferred choice because I found it to be more flexible than
+	// returning []]byte
+	// To retrieve a string: response.Body.String()
+	// To retrieve a []byte: response.Body.Bytes()
+	_, err = io.Copy(writer, r.Body)
+	if err != nil {
+		response.Error = err
+		return response, err
+	}
+
+	// Check if the writer implements io.Closer and close it if so
+	if closer, ok := writer.(io.Closer); ok {
+		err = closer.Close()
+		if err != nil {
+			response.Error = err
+			return response, err
+		}
+	}
 
 	// Check if the request was redirected
 	if len(r.Request.URL.String()) != len(response.URL) {
@@ -149,17 +183,6 @@ func doRequest(client *http.Client, method string, url string, payload []byte, o
 	response.AccessTime = time.Since(start)
 	response.Uncompressed = r.Uncompressed
 	response.TLS = r.TLS
-
-	// convert the http.Response.Body to a bytes.Buffer
-	// bytes.Buffer was a preferred choice because I found it to be more flexible than
-	// returning []]byte
-	// To retrieve a string: response.Body.String()
-	// To retrieve a []byte: response.Body.Bytes()
-	_, err = io.Copy(&response.Body, r.Body)
-	if err != nil {
-		response.Error = err
-		return response, err
-	}
 
 	return response, nil
 }

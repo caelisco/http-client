@@ -2,13 +2,18 @@ package request
 
 import (
 	"fmt"
+	"io"
 	"net/http"
+	"os"
 	"strings"
 
 	"github.com/caelisco/http-client/kv"
+	"github.com/google/uuid"
+	"github.com/oklog/ulid/v2"
 )
 
 type CompressionType string
+type UniqueIdentifierType string
 
 const (
 	CompressionNone    CompressionType = ""
@@ -18,21 +23,29 @@ const (
 	// Add other compression types as needed
 )
 
+const (
+	IdentifierNone UniqueIdentifierType = ""
+	IdentifierUUID UniqueIdentifierType = "uuid"
+	IdentifierULID UniqueIdentifierType = "ulid"
+)
+
 // RequestOptions represents additional options for the HTTP request.
 //
 // DisableRedirect - Determines if redirects should be followed or not. The default option is
 // false which means redirects will be followed.
 type Options struct {
-	Headers         []kv.Header     // Custom headers to be added to the request.
-	Cookies         []*http.Cookie  // Cookies to be included in the request.
-	ProtocolScheme  string          // define a custom protocol scheme. It defaults to https
-	Compression     CompressionType // CompressionType to use: none, gzip, deflate or brotli
-	UserAgent       string          // User Agent to send with requests
-	DisableRedirect bool            // Disable or enable redirects. Default is false - do not disable redirects
+	Headers          []kv.Header          // Custom headers to be added to the request
+	Cookies          []*http.Cookie       // Cookies to be included in the request
+	ProtocolScheme   string               // define a custom protocol scheme. It defaults to https
+	Compression      CompressionType      // CompressionType to use: none, gzip, deflate or brotli
+	UserAgent        string               // User Agent to send with requests
+	DisableRedirect  bool                 // Disable or enable redirects. Default is false - do not disable redirects
+	UniqueIdentifier UniqueIdentifierType // Internal trace or identifier for the request
+	Writer           io.WriteCloser       // Define a custom resource you will write to other than the bytes.Buffer i.e.: a file
 }
 
 func NewOptions() Options {
-	return Options{}
+	return Options{UniqueIdentifier: IdentifierULID}
 }
 
 // AddHeader adds a new header to the RequestOptions.
@@ -92,4 +105,23 @@ func (opt *Options) DisableRedirects() bool {
 
 func (opt *Options) EnableRedirects() bool {
 	return false
+}
+
+func (opt *Options) GenerateIdentifier() string {
+	switch opt.UniqueIdentifier {
+	case IdentifierUUID:
+		return uuid.New().String()
+	case IdentifierULID:
+		return ulid.Make().String()
+	}
+	return ""
+}
+
+func (opt *Options) FileWriter(filename string) error {
+	var err error
+	opt.Writer, err = os.Create(filename)
+	if err != nil {
+		return err
+	}
+	return nil
 }
