@@ -18,6 +18,7 @@ type Response struct {
 	Options          request.Options         // Additional options for the request
 	RequestTime      int64                   // The time when the request was made
 	ResponseTime     int64                   // The time when the response was received
+	ProcessedTime    int64                   // The time taken for the request to be processed
 	Status           string                  // Status of the HTTP response
 	StatusCode       int                     // HTTP status code of the response
 	Proto            string                  // HTTP protocol used
@@ -33,6 +34,17 @@ type Response struct {
 	TLS              *tls.ConnectionState    // TLS connection state
 	Redirected       bool                    // Was the request redirected
 	Location         string                  // If redirected, what was the location
+}
+
+func New(url string, method string, payload []byte, opt request.Options) Response {
+	return Response{
+		UniqueIdentifier: opt.GenerateIdentifier(),
+		URL:              url,
+		Method:           method,
+		RequestPayload:   payload,
+		Options:          opt,
+		CompressionType:  opt.Compression,
+	}
 }
 
 // Bytes is a helper function to get the underlying bytes.Buffer []byte

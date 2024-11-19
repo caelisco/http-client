@@ -7,15 +7,21 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/andybalholm/brotli"
 	"github.com/caelisco/http-client/form"
 	"github.com/caelisco/http-client/request"
+	"github.com/caelisco/http-client/response"
 )
 
-const useragent = "caelisco/http-client/v0.4.0"
+const (
+	useragent          = "caelisco/http-client/v0.4.0"
+	SchemeHTTP  string = "http://"
+	SchemeHTTPS string = "https://"
+	SchemeWS    string = "ws://"
+	SchemeWSS   string = "wss://"
+)
 
 // A global default client is used for all of the method-based requests.
 var client = &http.Client{
@@ -37,21 +43,9 @@ func doRequest(client *http.Client, method string, url string, payload []byte, o
 	}
 
 	// Check if there is a pre-defined protocol scheme, else default to https://
-	if opt.ProtocolScheme != "" {
-		// Clean the protocol scheme prior to add in the new one
-		// This can be used to force http:// over https://
-		url = strings.TrimPrefix(url, "http://")
-		url = strings.TrimPrefix(url, "https://")
-		if !strings.Contains(opt.ProtocolScheme, "://") {
-			opt.ProtocolScheme += "://"
-		}
-		if !strings.HasPrefix(url, opt.ProtocolScheme) {
-			url = opt.ProtocolScheme + url
-		}
-	} else {
-		if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
-			url = "https://" + url
-		}
+	url, err := normaliseURL(url, opt.ProtocolScheme)
+	if err != nil {
+		return response.Response{}, fmt.Errorf("supplied url did not pass url.Parse(): %w", err)
 	}
 
 	// Adjust the UserAgent
@@ -61,16 +55,8 @@ func doRequest(client *http.Client, method string, url string, payload []byte, o
 	opt.AddHeader("User-Agent", opt.UserAgent)
 
 	// build the initial Response object
-	response := Response{
-		UniqueIdentifier: opt.GenerateIdentifier(),
-		URL:              url,
-		Method:           method,
-		RequestPayload:   payload,
-		Options:          opt,
-		CompressionType:  opt.Compression,
-	}
+	response := response.New(url, method, payload, opt)
 
-	var r *http.Response
 	var requestPayload io.Reader
 	// Assuming there is a payload, check the options to see if compression is required
 	// Apply the compression to the payload and set the appropriate header to inform
@@ -101,6 +87,7 @@ func doRequest(client *http.Client, method string, url string, payload []byte, o
 		}
 	}
 
+	// ready the request
 	request, err := http.NewRequest(method, url, requestPayload)
 	if err != nil {
 		response.Error = err
@@ -108,13 +95,13 @@ func doRequest(client *http.Client, method string, url string, payload []byte, o
 	}
 
 	// Assign headers from the RequestOptions
-	for _, h := range opt.Headers {
-		request.Header.Set(h.Key, h.Value)
+	for _, v := range opt.Headers {
+		request.Header.Set(v.Key, v.Value)
 	}
 
 	// Assign cookies from the RequestOptions
-	for _, c := range opt.Cookies {
-		request.AddCookie(c)
+	for _, v := range opt.Cookies {
+		request.AddCookie(v)
 	}
 
 	// Configure the HTTP client to follow or not follow redirects
@@ -125,8 +112,6 @@ func doRequest(client *http.Client, method string, url string, payload []byte, o
 		return nil
 	}
 
-	response.RequestTime = time.Now().Unix()
-
 	// To prevent out of memory if a very large payload is provided we can stream the bytes to a file
 	// or any data structure that implements the io.Writer interface.
 	// This is set in request.Options Writer
@@ -135,7 +120,9 @@ func doRequest(client *http.Client, method string, url string, payload []byte, o
 		writer = opt.Writer
 	}
 
+	var r *http.Response
 	// Perform the actual request
+	response.RequestTime = time.Now().Unix()
 	r, err = client.Do(request)
 
 	if err != nil {
@@ -143,18 +130,24 @@ func doRequest(client *http.Client, method string, url string, payload []byte, o
 		return response, err
 	}
 	defer r.Body.Close()
-
 	response.ResponseTime = time.Now().Unix()
 
 	// convert the http.Response.Body to a bytes.Buffer
 	// bytes.Buffer was a preferred choice because I found it to be more flexible than
-	// returning []]byte
-	// To retrieve a string: response.Body.String()
-	// To retrieve a []byte: response.Body.Bytes()
+	// returning []byte
 	_, err = io.Copy(writer, r.Body)
 	if err != nil {
 		response.Error = err
 		return response, err
+	}
+	response.ProcessedTime = time.Now().Unix()
+
+	if opt.Writer != nil {
+		err = writer.(io.Closer).Close()
+		if err != nil {
+			response.Error = err
+			return response, err
+		}
 	}
 
 	// Check if the writer implements io.Closer and close it if so
