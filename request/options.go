@@ -125,3 +125,56 @@ func (opt *Options) FileWriter(filename string) error {
 	}
 	return nil
 }
+
+func (opt *Options) Merge(src Options) {
+	// Merge headers
+	for _, sh := range src.Headers {
+		found := false
+		for i, th := range opt.Headers {
+			if th.Key == sh.Key {
+				opt.Headers[i] = sh
+				found = true
+				break
+			}
+		}
+		if !found {
+			opt.Headers = append(opt.Headers, sh)
+		}
+	}
+
+	// Merge cookies
+	for _, sc := range src.Cookies {
+		found := false
+		for i, tc := range opt.Cookies {
+			if tc.Name == sc.Name {
+				opt.Cookies[i] = sc
+				found = true
+				break
+			}
+		}
+		if !found {
+			opt.Cookies = append(opt.Cookies, sc)
+		}
+	}
+
+	// Merge other fields, source takes priority if not empty
+	if src.UniqueIdentifier != "" {
+		opt.UniqueIdentifier = src.UniqueIdentifier
+	}
+	if src.Compression != "" {
+		opt.Compression = src.Compression
+	}
+	if src.UserAgent != "" {
+		opt.UserAgent = src.UserAgent
+	}
+	if src.ProtocolScheme != "" {
+		opt.ProtocolScheme = src.ProtocolScheme
+	}
+
+	// DisableRedirect is a boolean, so we always take the source value
+	opt.DisableRedirect = src.DisableRedirect
+
+	if src.Writer != nil {
+		opt.Writer = src.Writer
+	}
+}

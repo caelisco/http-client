@@ -45,7 +45,7 @@ func (c *Client) GetGlobalOptions() RequestOptions {
 
 // AddGlobalOptions adds the provided options to the client's global options
 func (c *Client) AddGlobalOptions(options RequestOptions) {
-	mergeOptions(&c.global, options)
+	c.global.Merge(options)
 }
 
 // UpdateGlobalOptions updates the global RequestOptions of the client.
@@ -83,7 +83,7 @@ func (c *Client) doRequest(method string, url string, payload []byte, options ..
 	if len(options) == 0 {
 		opt = request.NewOptions()
 	} else {
-		mergeOptions(&opt, options[0])
+		opt.Merge(options[0])
 	}
 
 	// Perform the request with the merged options
@@ -189,57 +189,4 @@ func (c *Client) Trace(url string, opt ...RequestOptions) (Response, error) {
 // Returns the HTTP response and an error if any.
 func (c *Client) Custom(method string, url string, payload []byte, opt ...RequestOptions) (Response, error) {
 	return c.doRequest(method, url, payload, opt...)
-}
-
-// mergeOptions merges source options into target options, with source taking priority
-func mergeOptions(dest *RequestOptions, src RequestOptions) {
-
-	// Merge headers
-	for _, sh := range src.Headers {
-		found := false
-		for i, th := range dest.Headers {
-			if th.Key == sh.Key {
-				dest.Headers[i] = sh
-				found = true
-				break
-			}
-		}
-		if !found {
-			dest.Headers = append(dest.Headers, sh)
-		}
-	}
-
-	// Merge cookies
-	for _, sc := range src.Cookies {
-		found := false
-		for i, tc := range dest.Cookies {
-			if tc.Name == sc.Name {
-				dest.Cookies[i] = sc
-				found = true
-				break
-			}
-		}
-		if !found {
-			dest.Cookies = append(dest.Cookies, sc)
-		}
-	}
-
-	// Merge other fields, source takes priority if not empty
-	if src.UniqueIdentifier != "" {
-		dest.UniqueIdentifier = src.UniqueIdentifier
-	}
-	if src.Compression != "" {
-		dest.Compression = src.Compression
-	}
-	if src.UserAgent != "" {
-		dest.UserAgent = src.UserAgent
-	}
-	if src.ProtocolScheme != "" {
-		dest.ProtocolScheme = src.ProtocolScheme
-	}
-	// DisableRedirect is a boolean, so we always take the source value
-	dest.DisableRedirect = src.DisableRedirect
-	if src.Writer != nil {
-		dest.Writer = src.Writer
-	}
 }
