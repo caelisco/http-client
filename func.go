@@ -159,23 +159,8 @@ func doRequest(client *http.Client, method string, url string, payload []byte, o
 		}
 	}
 
-	// Check if the request was redirected
-	if len(r.Request.URL.String()) != len(response.URL) {
-		response.Redirected = true
-		response.Location = r.Request.URL.String()
-	}
-
 	// request has completed, add details to the response object
-	response.Status = r.Status
-	response.StatusCode = r.StatusCode
-	response.Proto = r.Proto
-	response.Header = r.Header
-	response.TransferEncoding = r.TransferEncoding
-	// store cookies from the response
-	response.Cookies = r.Cookies()
-	response.AccessTime = time.Since(start)
-	response.Uncompressed = r.Uncompressed
-	response.TLS = r.TLS
+	response.PopulateResponse(r, start)
 
 	return response, nil
 }

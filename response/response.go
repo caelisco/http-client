@@ -60,3 +60,22 @@ func (r *Response) String() string {
 func (r *Response) Length() int {
 	return r.Body.Len()
 }
+
+func (r *Response) PopulateResponse(resp *http.Response, start time.Time) {
+	r.Status = resp.Status
+	r.StatusCode = resp.StatusCode
+	r.Proto = resp.Proto
+	r.Header = resp.Header
+	r.TransferEncoding = resp.TransferEncoding
+	// store cookies from the response
+	r.Cookies = resp.Cookies()
+	r.AccessTime = time.Since(start)
+	r.Uncompressed = resp.Uncompressed
+	r.TLS = resp.TLS
+
+	// Check for redirects
+	if len(resp.Request.URL.String()) != len(r.URL) {
+		r.Redirected = true
+		r.Location = resp.Request.URL.String()
+	}
+}
