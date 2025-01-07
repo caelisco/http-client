@@ -153,7 +153,7 @@ func (opt *Option) AddHeader(key string, value string) {
 	if opt.Header == nil {
 		opt.Header = http.Header{}
 	}
-	opt.Header.Add(key, value)
+	opt.Header.Set(key, value)
 }
 
 // ClearHeaders removes all previously set headers from the Option.

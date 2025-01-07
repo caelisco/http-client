@@ -259,9 +259,13 @@ func Post(url string, payload any, opts ...*options.Option) (response.Response, 
 // Optionally, you can provide additional Options to customize the request.
 // Returns the HTTP response and an error if any.
 func PostFormData(url string, payload map[string]string, opts ...*options.Option) (response.Response, error) {
-	opt := options.New(opts...)
-	opt.Header.Add(ContentType, "application/x-www-form-urlencoded")
-	return doRequest(client, http.MethodPost, url, form.Encode(payload), opt)
+	opt := &options.Option{}
+	if len(opts) > 0 {
+		opt.Merge(opts[0])
+	}
+	opt.AddHeader(ContentType, "application/x-www-form-urlencoded")
+
+	return Post(url, form.Encode(payload), opt)
 }
 
 // PostFile uploads a file to the specified URL using an HTTP POST request.
@@ -302,9 +306,13 @@ func Put(url string, payload any, opts ...*options.Option) (response.Response, e
 // Optionally, you can provide additional Options to customize the request.
 // Returns the HTTP response and an error if any.
 func PutFormData(url string, payload map[string]string, opts ...*options.Option) (response.Response, error) {
-	opt := options.New(opts...)
-	opt.Header.Add(ContentType, "application/x-www-form-urlencoded")
-	return doRequest(client, http.MethodPut, url, form.Encode(payload), opt)
+	opt := &options.Option{}
+	if len(opts) > 0 {
+		opt.Merge(opts[0])
+	}
+	opt.AddHeader(ContentType, "application/x-www-form-urlencoded")
+
+	return Put(url, form.Encode(payload), opt)
 }
 
 // PutFile uploads a file to the specified URL using an HTTP PUT request.
@@ -345,9 +353,13 @@ func Patch(url string, payload any, opts ...*options.Option) (response.Response,
 // Optionally, you can provide additional Options to customize the request.
 // Returns the HTTP response and an error if any.
 func PatchFormData(url string, payload map[string]string, opts ...*options.Option) (response.Response, error) {
-	// Use the first options or create default
-	opt := options.New(opts...)
-	return doRequest(client, http.MethodPatch, url, form.Encode(payload), opt)
+	opt := &options.Option{}
+	if len(opts) > 0 {
+		opt.Merge(opts[0])
+	}
+	opt.AddHeader(ContentType, "application/x-www-form-urlencoded")
+
+	return Patch(url, form.Encode(payload), opt)
 }
 
 // PatchFile uploads a file to the specified URL using an HTTP PATCH request.
@@ -371,7 +383,7 @@ func PatchFile(url string, filename string, opts ...*options.Option) (response.R
 	defer file.Close()
 
 	// Use the Post method to send the file
-	return Put(url, file, opts...)
+	return Patch(url, file, opts...)
 }
 
 // Delete performs an HTTP DELETE to the specified URL.

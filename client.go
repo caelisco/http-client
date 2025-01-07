@@ -1,7 +1,9 @@
 package client
 
 import (
+	"fmt"
 	"net/http"
+	"os"
 
 	"github.com/caelisco/http-client/form"
 	"github.com/caelisco/http-client/options"
@@ -107,7 +109,7 @@ func (c *Client) doRequest(method string, url string, payload any, opts ...*opti
 
 // Get performs an HTTP GET to the specified URL.
 // It accepts the URL string as its first argument.
-// Optionally, you can provide additional RequestOptions to customize the request.
+// Optionally, you can provide additional Options to customize the request.
 // Returns the HTTP response and an error if any.
 func (c *Client) Get(url string, opts ...*options.Option) (response.Response, error) {
 	return c.doRequest(http.MethodGet, url, nil, opts...)
@@ -115,7 +117,7 @@ func (c *Client) Get(url string, opts ...*options.Option) (response.Response, er
 
 // Post performs an HTTP POST to the specified URL with the given payload.
 // It accepts the URL string as its first argument and the payload as the second argument.
-// Optionally, you can provide additional RequestOptions to customize the request.
+// Optionally, you can provide additional Options to customize the request.
 // Returns the HTTP response and an error if any.
 func (c *Client) Post(url string, payload any, opts ...*options.Option) (response.Response, error) {
 	return c.doRequest(http.MethodPost, url, payload, opts...)
@@ -124,21 +126,45 @@ func (c *Client) Post(url string, payload any, opts ...*options.Option) (respons
 // PostFormData performs an HTTP POST as an x-www-form-urlencoded payload to the specified URL.
 // It accepts the URL string as its first argument and a map[string]string the payload.
 // The map is converted to a url.QueryEscaped k/v pair that is sent to the server.
-// Optionally, you can provide additional RequestOptions to customize the request.
+// Optionally, you can provide additional Options to customize the request.
 // Returns the HTTP response and an error if any.
 func (c *Client) PostFormData(url string, payload map[string]string, opts ...*options.Option) (response.Response, error) {
-	switch len(opts) {
-	case 0:
-		opts = append(opts, &options.Option{Header: http.Header{"Content-Type": []string{"application/x-www-form-urlencoded"}}})
-	case 1:
-		opts[0].Header.Add(ContentType, "application/x-www-form-urlencoded")
+	opt := &options.Option{}
+	if len(opts) > 0 {
+		opt.Merge(opts[0])
 	}
-	return c.doRequest(http.MethodPost, url, form.Encode(payload), opts...)
+	opt.AddHeader(ContentType, "application/x-www-form-urlencoded")
+
+	return c.Post(url, form.Encode(payload), opt)
+}
+
+// PostFile uploads a file to the specified URL using an HTTP POST request.
+// It accepts the URL string as its first argument and the filename as the second argument.
+// The file is read from the specified filename and uploaded as the request payload.
+// Optionally, you can provide additional Options to customize the request.
+// Returns the HTTP response and an error if any.
+func (c *Client) PostFile(url string, filename string, opts ...*options.Option) (response.Response, error) {
+	_, err := os.Stat(filename)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return response.Response{}, fmt.Errorf("file does not exist: %s", filename)
+		}
+		return response.Response{}, fmt.Errorf("failed to access file: %v", err)
+	}
+
+	file, err := os.Open(filename)
+	if err != nil {
+		return response.Response{}, fmt.Errorf("failed to open file: %v", err)
+	}
+	defer file.Close()
+
+	// Use the Post method to send the file
+	return c.Post(url, file, opts...)
 }
 
 // Put performs an HTTP PUT to the specified URL with the given payload.
 // It accepts the URL string as its first argument and the payload as the second argument.
-// Optionally, you can provide additional RequestOptions to customize the request.
+// Optionally, you can provide additional Options to customize the request.
 // Returns the HTTP response and an error if any.
 func (c *Client) Put(url string, payload any, opts ...*options.Option) (response.Response, error) {
 	return c.doRequest(http.MethodPut, url, payload, opts...)
@@ -147,21 +173,45 @@ func (c *Client) Put(url string, payload any, opts ...*options.Option) (response
 // PutFormData performs an HTTP PUT as an x-www-form-urlencoded payload to the specified URL.
 // It accepts the URL string as its first argument and a map[string]string the payload.
 // The map is converted to a url.QueryEscaped k/v pair that is sent to the server.
-// Optionally, you can provide additional RequestOptions to customize the request.
+// Optionally, you can provide additional Options to customize the request.
 // Returns the HTTP response and an error if any.
 func (c *Client) PutFormData(url string, payload map[string]string, opts ...*options.Option) (response.Response, error) {
-	switch len(opts) {
-	case 0:
-		opts = append(opts, &options.Option{Header: http.Header{"Content-Type": []string{"application/x-www-form-urlencoded"}}})
-	case 1:
-		opts[0].Header.Add(ContentType, "application/x-www-form-urlencoded")
+	opt := &options.Option{}
+	if len(opts) > 0 {
+		opt.Merge(opts[0])
 	}
-	return c.doRequest(http.MethodPut, url, form.Encode(payload), opts...)
+	opt.AddHeader(ContentType, "application/x-www-form-urlencoded")
+
+	return c.Put(url, form.Encode(payload), opt)
+}
+
+// PutFile uploads a file to the specified URL using an HTTP PUT request.
+// It accepts the URL string as its first argument and the filename as the second argument.
+// The file is read from the specified filename and uploaded as the request payload.
+// Optionally, you can provide additional Options to customize the request.
+// Returns the HTTP response and an error if any.
+func (c *Client) PutFile(url string, filename string, opts ...*options.Option) (response.Response, error) {
+	_, err := os.Stat(filename)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return response.Response{}, fmt.Errorf("file does not exist: %s", filename)
+		}
+		return response.Response{}, fmt.Errorf("failed to access file: %v", err)
+	}
+
+	file, err := os.Open(filename)
+	if err != nil {
+		return response.Response{}, fmt.Errorf("failed to open file: %v", err)
+	}
+	defer file.Close()
+
+	// Use the Post method to send the file
+	return c.Put(url, file, opts...)
 }
 
 // Patch performs an HTTP PATCH to the specified URL with the given payload.
 // It accepts the URL string as its first argument and the payload as the second argument.
-// Optionally, you can provide additional RequestOptions to customize the request.
+// Optionally, you can provide additional Options to customize the request.
 // Returns the HTTP response and an error if any.
 func (c *Client) Patch(url string, payload any, opts ...*options.Option) (response.Response, error) {
 	return c.doRequest(http.MethodPatch, url, payload, opts...)
@@ -170,21 +220,45 @@ func (c *Client) Patch(url string, payload any, opts ...*options.Option) (respon
 // PatchFormData performs an HTTP PATCH as an x-www-form-urlencoded payload to the specified URL.
 // It accepts the URL string as its first argument and a map[string]string the payload.
 // The map is converted to a url.QueryEscaped k/v pair that is sent to the server.
-// Optionally, you can provide additional RequestOptions to customize the request.
+// Optionally, you can provide additional Options to customize the request.
 // Returns the HTTP response and an error if any.
 func (c *Client) PatchFormData(url string, payload map[string]string, opts ...*options.Option) (response.Response, error) {
-	switch len(opts) {
-	case 0:
-		opts = append(opts, &options.Option{Header: http.Header{"Content-Type": []string{"application/x-www-form-urlencoded"}}})
-	case 1:
-		opts[0].Header.Add(ContentType, "application/x-www-form-urlencoded")
+	opt := &options.Option{}
+	if len(opts) > 0 {
+		opt.Merge(opts[0])
 	}
-	return c.doRequest(http.MethodPatch, url, form.Encode(payload), opts...)
+	opt.AddHeader(ContentType, "application/x-www-form-urlencoded")
+
+	return c.Patch(url, form.Encode(payload), opt)
+}
+
+// PatchFile uploads a file to the specified URL using an HTTP PATCH request.
+// It accepts the URL string as its first argument and the filename as the second argument.
+// The file is read from the specified filename and uploaded as the request payload.
+// Optionally, you can provide additional Options to customize the request.
+// Returns the HTTP response and an error if any.
+func (c *Client) PatchFile(url string, filename string, opts ...*options.Option) (response.Response, error) {
+	_, err := os.Stat(filename)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return response.Response{}, fmt.Errorf("file does not exist: %s", filename)
+		}
+		return response.Response{}, fmt.Errorf("failed to access file: %v", err)
+	}
+
+	file, err := os.Open(filename)
+	if err != nil {
+		return response.Response{}, fmt.Errorf("failed to open file: %v", err)
+	}
+	defer file.Close()
+
+	// Use the Post method to send the file
+	return c.Patch(url, file, opts...)
 }
 
 // Delete performs an HTTP DELETE to the specified URL.
 // It accepts the URL string as its first argument.
-// Optionally, you can provide additional RequestOptions to customize the request.
+// Optionally, you can provide additional Options to customize the request.
 // Returns the HTTP response and an error if any.
 func (c *Client) Delete(url string, opts ...*options.Option) (response.Response, error) {
 	return c.doRequest(http.MethodDelete, url, nil, opts...)
@@ -192,7 +266,7 @@ func (c *Client) Delete(url string, opts ...*options.Option) (response.Response,
 
 // Connect performs an HTTP CONNECT to the specified URL.
 // It accepts the URL string as its first argument.
-// Optionally, you can provide additional RequestOptions to customize the request.
+// Optionally, you can provide additional Options to customize the request.
 // Returns the HTTP response and an error if any.
 func (c *Client) Connect(url string, opts ...*options.Option) (response.Response, error) {
 	return c.doRequest(http.MethodConnect, url, nil, opts...)
@@ -200,7 +274,7 @@ func (c *Client) Connect(url string, opts ...*options.Option) (response.Response
 
 // Head performs an HTTP HEAD to the specified URL.
 // It accepts the URL string as its first argument.
-// Optionally, you can provide additional RequestOptions to customize the request.
+// Optionally, you can provide additional Options to customize the request.
 // Returns the HTTP response and an error if any.
 func (c *Client) Head(url string, opts ...*options.Option) (response.Response, error) {
 	return c.doRequest(http.MethodHead, url, nil, opts...)
@@ -208,7 +282,7 @@ func (c *Client) Head(url string, opts ...*options.Option) (response.Response, e
 
 // Options performs an HTTP OPTIONS to the specified URL.
 // It accepts the URL string as its first argument.
-// Optionally, you can provide additional RequestOptions to customize the request.
+// Optionally, you can provide additional Options to customize the request.
 // Returns the HTTP response and an error if any.
 func (c *Client) Options(url string, opts ...*options.Option) (response.Response, error) {
 	return c.doRequest(http.MethodHead, url, nil, opts...)
@@ -216,7 +290,7 @@ func (c *Client) Options(url string, opts ...*options.Option) (response.Response
 
 // Trace performs an HTTP TRACE to the specified URL.
 // It accepts the URL string as its first argument.
-// Optionally, you can provide additional RequestOptions to customize the request.
+// Optionally, you can provide additional Options to customize the request.
 // Returns the HTTP response and an error if any.
 func (c *Client) Trace(url string, opts ...*options.Option) (response.Response, error) {
 	return c.doRequest(http.MethodTrace, url, nil, opts...)
@@ -224,7 +298,7 @@ func (c *Client) Trace(url string, opts ...*options.Option) (response.Response, 
 
 // Custom performs a custom HTTP method to the specified URL with the given payload.
 // It accepts the HTTP method as its first argument, the URL string as the second argument,
-// the payload as the third argument, and optionally additional RequestOptions to customize the request.
+// the payload as the third argument, and optionally additional Options to customize the request.
 // Returns the HTTP response and an error if any.
 func (c *Client) Custom(method string, url string, payload any, opts ...*options.Option) (response.Response, error) {
 	return c.doRequest(method, url, payload, opts...)
