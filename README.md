@@ -11,7 +11,7 @@ In most cases, the HTTP method function calls are probably what you are looking 
 
 The reusable client is typically more useful in scenarios where you need to work with cookies, or in scenarios where it will be useful to keep track of past requests. An example could be for writing an API test that might require different headers/cookies to be set and used as part of the testing of each end point.
 
-You can view additional examples at https://www.caelisco.net/http-client/
+The readme contains documentation for v1.0.0
 
 # Basic example
 ```go
@@ -80,37 +80,6 @@ func main() {
 	fmt.Println(resp.String())
 }
 ```
-
-# Compressing a stream
-You can specify a compression stream using the options.Compression by providing an option.CompressionType. Compression is handled automatically as the bytes are sent to the server. Because the payload is compressed on-the-fly the final size is not known before streaming so the Content-Length is set to -1
-
-http-client currently supports gzip, deflate and brotli. Newer versions of the package could expand this to custom compression types.
-
-```go
-const (
-	CompressionNone    CompressionType = ""
-	CompressionGzip    CompressionType = "gzip"
-	CompressionDeflate CompressionType = "deflate"
-	CompressionBrotli  CompressionType = "br"
-)
-```
-
-You can also define your own custom compression assuming the server is able to work with the compressed data.
-
-```go
-opt := options.New()
-// set the compression to custom
-opt.SetCompression(options.CompressionCustom)
-// create a writer to compress the stream
-opt.CustomCompressor = func(w *io.PipeWriter) (io.WriteCloser, error) {
-	return snappy.NewWriter(w), nil
-}
-// define the compression type to be used with the content-encoding
-opt.CustomCompressionType = options.CompressionType("snappy")
-// perform the request
-resp, err := client.Post(url, data, opt)
-```
-
 # Upload a file
 The latest version of http-client provides a more powerful interface for sending a payload by changing the payload from a `[]byte` to using `any`.
 
@@ -144,8 +113,42 @@ options.SetFileOutput(filepath string)
 options.SetBufferOutput()
 ```
 
+
+# Compressing a stream
+You can specify a compression stream using the options.Compression by providing an option.CompressionType. Compression involves streaming the payload to the server using io.Pipe() and io.Copy() to reduce memory pressure. You can also define a custom buffer size.
+
+http-client supports gzip, deflate and brotli.
+
+```go
+const (
+	CompressionNone    CompressionType = ""
+	CompressionGzip    CompressionType = "gzip"
+	CompressionDeflate CompressionType = "deflate"
+	CompressionBrotli  CompressionType = "br"
+	CompressionCustom  CompressionType = "custom"
+)
+```
+
+You can also define your own custom compression assuming the server is able to work with the compressed data.
+
+```go
+opt := options.New()
+// set the compression to custom
+opt.SetCompression(options.CompressionCustom)
+// create a writer to compress the stream
+opt.CustomCompressor = func(w *io.PipeWriter) (io.WriteCloser, error) {
+	return snappy.NewWriter(w), nil
+}
+// define the compression type to be used with the content-encoding
+opt.CustomCompressionType = options.CompressionType("snappy")
+// perform the request
+resp, err := client.Post(url, data, opt)
+```
+
 # Progress
 http-client includes progress reporting for both uploading and downloading content.
+
+An example also exists in [progress/progress.go](https://github.com/caelisco/http-client/blob/main/progress/progress.go).
 
 ```go
 file, err := os.Open("README.md")
