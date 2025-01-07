@@ -22,6 +22,8 @@ type CompressionType string
 type UniqueIdentifierType string
 type UploadType string
 
+const ua = "caelisco/http-client/v1.0.0"
+
 const (
 	CompressionNone    CompressionType = ""
 	CompressionGzip    CompressionType = "gzip"
@@ -36,9 +38,9 @@ const (
 	IdentifierULID UniqueIdentifierType = "ulid"
 )
 
-// RequestOptions represents additional options for the HTTP request.
-// DisableRedirect - Determines if redirects should be followed or not. The default option is
-// false which means redirects will be followed.
+// Option provides configuration for HTTP requests. It allows customization of various aspects
+// of the request including headers, compression, logging, response handling, and progress tracking.
+// If no options are provided when making a request, a default configuration is automatically generated.
 type Option struct {
 	Verbose                  bool                                           // Whether logging should be verbose or not
 	Logger                   slog.Logger                                    // Logging - default uses the slog TextHandler
@@ -60,11 +62,16 @@ type Option struct {
 	OnDownloadProgress       func(bytesRead, totalBytes int64)              // To monitor and track progress when downloading
 }
 
+// New creates a default Option with pre-configured settings. If additional options are provided
+// via the variadic parameter, they will be merged with the default settings, with the provided
+// options taking precedence.
 func New(opts ...*Option) *Option {
 	opt := &Option{
 		Verbose:                  false,
 		Logger:                   *slog.New(slog.NewTextHandler(os.Stdout, nil)),
 		Header:                   http.Header{},
+		Compression:              CompressionNone,
+		UserAgent:                ua,
 		FollowRedirect:           false,
 		PreserveMethodOnRedirect: false,
 		UniqueIdentifierType:     IdentifierULID,
@@ -74,7 +81,8 @@ func New(opts ...*Option) *Option {
 		},
 	}
 
-	// Check if opts is not nil and has at least one element
+	// If an Option is provided as a variadic merge it with the default one.
+	// The source (opts[0]) takes preference when assigning variables.
 	if len(opts) > 0 && opts[0] != nil {
 		opt.Merge(opts[0])
 	}
@@ -82,35 +90,47 @@ func New(opts ...*Option) *Option {
 	return opt
 }
 
+// LogVerbose logs a message with the configured logger if verbose logging is enabled.
+// The message will be logged at INFO level with any additional arguments provided.
 func (opt *Option) LogVerbose(msg string, args ...any) {
 	if opt.Verbose {
 		opt.Logger.Info(msg, args...)
 	}
 }
 
+// EnableLogging turns on verbose logging for the Option instance.
 func (opt *Option) EnableLogging() {
 	opt.Verbose = true
 }
 
+// DisableLogging turns off verbose logging for the Option instance.
 func (opt *Option) DisableLogging() {
 	opt.Verbose = false
 }
 
+// UseTextLogger configures the Option to use a text-based logger and enables verbose logging.
+// The logger will output to stdout using the default slog TextHandler format.
 func (opt *Option) UseTextLogger() {
 	opt.Verbose = true
 	opt.Logger = *slog.New(slog.NewTextHandler(os.Stdout, nil))
 }
 
+// UseJsonLogger configures the Option to use a JSON-based logger and enables verbose logging.
+// The logger will output to stdout using the default slog JSONHandler format.
 func (opt *Option) UseJsonLogger() {
 	opt.Verbose = true
 	opt.Logger = *slog.New(slog.NewJSONHandler(os.Stdout, nil))
 }
 
+// SetLogger configures a custom logger and enables verbose logging.
+// The provided logger will replace any existing logger configuration.
 func (opt *Option) SetLogger(logger *slog.Logger) {
 	opt.Verbose = true
 	opt.Logger = *logger
 }
 
+// AddHeader adds a new header with the specified key and value to the request headers.
+// If the headers map hasn't been initialized, it will be created.
 // Kept for backwards compatability
 func (opt *Option) AddHeader(key string, value string) {
 	if opt.Header == nil {
@@ -119,19 +139,13 @@ func (opt *Option) AddHeader(key string, value string) {
 	opt.Header.Add(key, value)
 }
 
-// ListHeaders prints out the list of headers in the RequestOptions.
-func (opt *Option) ListHeaders() {
-	for k, v := range opt.Header {
-		fmt.Printf("%s=%s", k, v)
-	}
-}
-
-// ClearHeaders clears all headers in the RequestOptions.
+// ClearHeaders removes all previously set headers from the Option.
 func (opt *Option) ClearHeaders() {
-	opt.Header = nil
+	opt.Header = http.Header{}
 }
 
-// AddCookie adds a new cookie to the RequestOptions.
+// AddCookie adds a new cookie to the Option's cookie collection.
+// If the cookie slice hasn't been initialized, it will be created.
 func (opt *Option) AddCookie(cookie *http.Cookie) {
 	if opt.Cookies == nil {
 		opt.Cookies = []*http.Cookie{}
@@ -139,29 +153,29 @@ func (opt *Option) AddCookie(cookie *http.Cookie) {
 	opt.Cookies = append(opt.Cookies, cookie)
 }
 
-// ListCookies prints out the list of cookies in the RequestOptions.
-func (opt *Option) ListCookies() {
-	for _, c := range opt.Cookies {
-		fmt.Printf("%s=%s", c.Name, c.Value)
-	}
-}
-
-// ClearCookies clears all cookies in the RequestOptions.
+// ClearCookies removes all previously set cookies from the Option.
 func (opt *Option) ClearCookies() {
-	opt.Cookies = nil
+	opt.Cookies = []*http.Cookie{}
 }
 
+// SetProtocolScheme sets the protocol scheme (e.g., "http://", "https://") for requests.
+// If the provided scheme doesn't end with "://", it will be automatically appended.
 func (opt *Option) SetProtocolScheme(scheme string) {
-	if !strings.Contains(scheme, "://") {
+	if !strings.HasSuffix(scheme, "://") {
 		scheme += "://"
 	}
 	opt.ProtocolScheme = scheme
 }
 
+// SetCompression configures the compression type to be used for the request.
+// Valid compression types include: none, gzip, deflate, brotli, and custom.
 func (opt *Option) SetCompression(compressionType CompressionType) {
 	opt.Compression = compressionType
 }
 
+// GetCompressor returns an appropriate io.WriteCloser based on the configured compression type.
+// Returns an error if the compression type is unsupported or if a custom compressor
+// is not properly configured.
 func (opt *Option) GetCompressor(w *io.PipeWriter) (io.WriteCloser, error) {
 	switch opt.Compression {
 	case CompressionGzip:
@@ -181,47 +195,34 @@ func (opt *Option) GetCompressor(w *io.PipeWriter) (io.WriteCloser, error) {
 	}
 }
 
+// EnableRedirects configures the Option to follow HTTP redirects.
 func (opt *Option) EnableRedirects() {
 	opt.FollowRedirect = true
 }
 
+// DisableRedirects configures the Option to not follow HTTP redirects.
 func (opt *Option) DisableRedirects() {
 	opt.FollowRedirect = false
 }
 
+// EnablePreserveMethodOnRedirect configures redirects to maintain the original HTTP method.
 func (opt *Option) EnablePreserveMethodOnRedirect() {
 	opt.PreserveMethodOnRedirect = true
 }
 
+// DisablePreserveMethodOnRedirect configures redirects to not maintain the original HTTP method.
 func (opt *Option) DisablePreserveMethodOnRedirect() {
 	opt.PreserveMethodOnRedirect = false
 }
 
-func defaultTransport() *http.Transport {
-	return &http.Transport{
-		Proxy: http.ProxyFromEnvironment,
-		DialContext: (&net.Dialer{
-			Timeout:   30 * time.Second,
-			KeepAlive: 30 * time.Second,
-			DualStack: true,
-		}).DialContext,
-		MaxIdleConns:        100,
-		MaxIdleConnsPerHost: 100,
-		IdleConnTimeout:     90 * time.Second,
-		// For large files, increase these timeouts
-		ResponseHeaderTimeout: 30 * time.Second,
-		TLSHandshakeTimeout:   15 * time.Second,
-		// Keep HTTP/2 for better performance
-		ForceAttemptHTTP2: true,
-		// Only disable compression for already compressed files
-		DisableCompression: false,
-	}
-}
-
+// SetTransport configures a custom HTTP transport for the requests.
+// This allows fine-grained control over connection pooling, timeouts, and other transport-level settings.
 func (opt *Option) SetTransport(transport *http.Transport) {
 	opt.Transport = transport
 }
 
+// GenerateIdentifier creates a unique identifier based on the configured UniqueIdentifierType.
+// Returns a UUID or ULID string, or an empty string if no identifier type is configured.
 func (opt *Option) GenerateIdentifier() string {
 	switch opt.UniqueIdentifierType {
 	case IdentifierUUID:
@@ -232,14 +233,16 @@ func (opt *Option) GenerateIdentifier() string {
 	return ""
 }
 
-// SetDownloadBufferSize allows custom buffer size if needed
-func (opt *Option) SetDownloadBufferSize(sizeInBytes int) {
-	if sizeInBytes > 0 {
-		opt.DownloadBufferSize = &sizeInBytes
+// SetDownloadBufferSize configures the buffer size used when downloading files.
+// The size must be positive; otherwise, the setting will be ignored.
+func (opt *Option) SetDownloadBufferSize(size int) {
+	if size > 0 {
+		opt.DownloadBufferSize = &size
 	}
 }
 
-// InitialiseWriter sets up the appropriate writer based on the ResponseWriter configuration
+// InitialiseWriter sets up the appropriate writer based on the ResponseWriter configuration.
+// Returns an error if the writer type is invalid or if required parameters are missing.
 func (opt *Option) InitialiseWriter() (io.WriteCloser, error) {
 	switch opt.ResponseWriter.Type {
 	case WriteToFile:
@@ -259,14 +262,13 @@ func (opt *Option) InitialiseWriter() (io.WriteCloser, error) {
 	return opt.ResponseWriter.writer, nil
 }
 
-// GetWriter returns the underlying io.WriteCloser
+// GetWriter returns the currently configured io.WriteCloser instance.
 func (opt *Option) GetWriter() io.WriteCloser {
 	return opt.ResponseWriter.writer
 }
 
-// SetOutput configures how the response should be written
-// For WriteToBuffer: opt.SetOutput(WriteToBuffer)
-// For WriteToFile: opt.SetOutput(WriteToFile, "path/to/file.txt")
+// SetOutput configures how the response should be written, either to a file or buffer.
+// For file output, a filepath must be provided. Returns an error if the configuration is invalid.
 func (opt *Option) SetOutput(writerType ResponseWriterType, filepath ...string) error {
 	opt.ResponseWriter.Type = writerType
 
@@ -288,7 +290,7 @@ func (opt *Option) SetOutput(writerType ResponseWriterType, filepath ...string) 
 	return nil
 }
 
-// SetFileOutput configures the response writer to write to a file
+// SetFileOutput configures the response writer to write responses to a file at the specified path.
 func (opt *Option) SetFileOutput(filepath string) {
 	opt.ResponseWriter = ResponseWriter{
 		Type:     WriteToFile,
@@ -296,13 +298,16 @@ func (opt *Option) SetFileOutput(filepath string) {
 	}
 }
 
-// SetBufferOutput configures the response writer to write to an in-memory buffer
+// SetBufferOutput configures the response writer to write responses to an in-memory buffer.
 func (opt *Option) SetBufferOutput() {
 	opt.ResponseWriter = ResponseWriter{
 		Type: WriteToBuffer,
 	}
 }
 
+// Merge combines the settings from another Option instance into this one.
+// Settings from the source Option take precedence over existing settings.
+// This includes headers, cookies, compression settings, and all other configuration options.
 func (opt *Option) Merge(src *Option) {
 	// Merge Headers
 	if opt.Header == nil {
@@ -377,5 +382,38 @@ func (opt *Option) Merge(src *Option) {
 
 	if src.OnDownloadProgress != nil {
 		opt.OnDownloadProgress = src.OnDownloadProgress
+	}
+}
+
+// defaultTransport creates and returns an http.Transport configured for typical internal/low-latency
+// operations. The settings are optimized for reliable HTTP client usage in environments where
+// request volume is moderate and network conditions are generally good.
+func defaultTransport() *http.Transport {
+	return &http.Transport{
+		// Use proxy settings from environment variables (HTTP_PROXY, HTTPS_PROXY, NO_PROXY)
+		Proxy: http.ProxyFromEnvironment,
+
+		// Configure the dialer with conservative timeouts for typical internal network conditions
+		DialContext: (&net.Dialer{
+			Timeout:   15 * time.Second, // Shorter timeout for internal services
+			KeepAlive: 15 * time.Second, // Moderate keep-alive for connection reuse
+			DualStack: true,             // Support both IPv4 and IPv6
+		}).DialContext,
+
+		// Connection pooling settings for moderate traffic
+		MaxIdleConns:        20, // Total idle connections in the pool
+		MaxIdleConnsPerHost: 5,  // Idle connections per host (internal services typically use few hosts)
+		MaxConnsPerHost:     10, // Limit concurrent connections per host
+
+		// Timeout settings optimized for internal network conditions
+		IdleConnTimeout:       90 * time.Second, // How long to keep idle connections
+		ResponseHeaderTimeout: 10 * time.Second, // Max time to wait for response headers
+		TLSHandshakeTimeout:   5 * time.Second,  // Max time for TLS handshake
+		ExpectContinueTimeout: 1 * time.Second,  // Timeout for 100-continue responses
+
+		// Protocol and behavior settings
+		ForceAttemptHTTP2:  true,  // Prefer HTTP/2 when available
+		DisableCompression: false, // Allow response compression
+		DisableKeepAlives:  false, // Enable connection reuse
 	}
 }
