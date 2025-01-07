@@ -5,6 +5,8 @@ import (
 	"io"
 	"log"
 	"net/http"
+	netURL "net/url"
+	"strings"
 	"time"
 
 	"github.com/caelisco/http-client/form"
@@ -13,7 +15,6 @@ import (
 )
 
 const (
-	useragent          = "caelisco/http-client/v1.0.0"
 	SchemeHTTP  string = "http://"
 	SchemeHTTPS string = "https://"
 	SchemeWS    string = "ws://"
@@ -22,10 +23,7 @@ const (
 )
 
 // A global default client is used for all of the method-based requests.
-var client = &http.Client{
-	//Timeout: 30 * time.Second, // Set an appropriate timeout
-	Timeout: 0,
-}
+var client = &http.Client{}
 
 // doRequest performs the HTTP request to the server/resource.
 func doRequest(client *http.Client, method string, url string, payload any, opts ...*options.Option) (response.Response, error) {
@@ -42,15 +40,12 @@ func doRequest(client *http.Client, method string, url string, payload any, opts
 		return response.Response{}, fmt.Errorf("supplied url did not pass url.Parse(): %w", err)
 	}
 
-	if opt.UserAgent == "" {
-		opt.UserAgent = useragent
-	}
 	opt.Header.Add("User-Agent", opt.UserAgent)
 
 	var totalSize int64 = -1
 	var payloadReader io.Reader
 
-	payloadReader, totalSize, err = createPayloadReader(payload, opt)
+	payloadReader, totalSize, err = opt.CreatePayloadReader(payload)
 	if err != nil {
 		return response.Response{}, fmt.Errorf("unable to create payload reader: %w", err)
 	}
@@ -352,4 +347,37 @@ func Trace(url string, opts ...*options.Option) (response.Response, error) {
 // Returns the HTTP response and an error if any.
 func Custom(method string, url string, payload any, opts ...*options.Option) (response.Response, error) {
 	return doRequest(client, method, url, payload, opts...)
+}
+
+func normaliseURL(url string, protocolScheme string) (string, error) {
+	url = strings.TrimSpace(url)
+
+	// First validate if the input URL has proper scheme format if it contains a colon
+	if strings.Contains(url, ":") {
+		if !strings.Contains(url, "://") {
+			return "", fmt.Errorf("invalid URL format: missing // after scheme")
+		}
+	}
+
+	if protocolScheme != "" {
+		url = strings.TrimPrefix(url, string(SchemeHTTP))
+		url = strings.TrimPrefix(url, string(SchemeHTTPS))
+		if !strings.Contains(protocolScheme, "://") {
+			protocolScheme += "://"
+		}
+		if !strings.HasPrefix(url, protocolScheme) {
+			url = protocolScheme + url
+		}
+	} else {
+		if !strings.HasPrefix(url, SchemeHTTP) && !strings.HasPrefix(url, SchemeHTTPS) {
+			url = SchemeHTTPS + url
+		}
+	}
+
+	// Parse the URL to validate it
+	if _, err := netURL.Parse(url); err != nil {
+		return "", err
+	}
+
+	return url, nil
 }

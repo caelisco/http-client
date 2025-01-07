@@ -8,73 +8,75 @@ import (
 	"github.com/caelisco/http-client/options"
 )
 
-// Response represents the HTTP response along with additional details.
+// Response represents the HTTP response along with additional metadata
 type Response struct {
-	UniqueIdentifier string                    // Internally generated UUID for the request
-	URL              string                    // URL of the request
-	Method           string                    // HTTP method of the request
-	RequestPayload   any                       // Payload of the request
-	Options          *options.Option           // Additional options for the request
-	RequestTime      int64                     // The time when the request was made
-	ResponseTime     int64                     // The time when the response was received
-	ProcessedTime    int64                     // The time taken for the request to be processed
-	Status           string                    // Status of the HTTP response
-	StatusCode       int                       // HTTP status code of the response
-	Proto            string                    // HTTP protocol used
-	Header           http.Header               // HTTP headers of the response
-	ContentLength    int64                     // Content length from the response
-	TransferEncoding []string                  // Transfer encoding of the response
-	CompressionType  options.CompressionType   // Type of compression
-	Uncompressed     bool                      // Was the response compressed - https://pkg.go.dev/net/http#Response.Uncompressed
-	Cookies          []*http.Cookie            // Cookies received in the response
+	UniqueIdentifier string                    // Unique ID for the request, generated internally
+	URL              string                    // URL the request was made to
+	Method           string                    // HTTP method used (e.g., GET, POST)
+	RequestPayload   any                       // Payload sent with the request
+	Options          *options.Option           // Configuration options for the request
+	RequestTime      int64                     // Timestamp of when the request was initiated
+	ResponseTime     int64                     // Timestamp of when the response was received
+	ProcessedTime    int64                     // Duration taken to process the request
+	Status           string                    // HTTP status message (e.g., "200 OK")
+	StatusCode       int                       // HTTP status code (e.g., 200, 404)
+	Proto            string                    // Protocol used (e.g., HTTP/1.1)
+	Header           http.Header               // Headers included in the response
+	ContentLength    int64                     // Length of the response content
+	TransferEncoding []string                  // Transfer encoding details from the response
+	CompressionType  options.CompressionType   // Type of compression applied to the response
+	Uncompressed     bool                      // Indicates if the response was uncompressed
+	Cookies          []*http.Cookie            // Cookies received with the response
 	AccessTime       time.Duration             // Time taken to complete the request
-	Body             options.WriteCloserBuffer // Response body as bytes
-	Error            error                     // Error encountered during the request
-	TLS              *tls.ConnectionState      // TLS connection state
-	Redirected       bool                      // Was the request redirected
-	Location         string                    // If redirected, what was the location
+	Body             options.WriteCloserBuffer // The response body as a buffer
+	Error            error                     // Any error encountered during the request
+	TLS              *tls.ConnectionState      // Details about the TLS connection
+	Redirected       bool                      // Indicates if the request was redirected
+	Location         string                    // New location if the request was redirected
 }
 
+// New initializes a new Response instance with basic details
 func New(url string, method string, payload any, opt *options.Option) Response {
 	return Response{
-		UniqueIdentifier: opt.GenerateIdentifier(),
-		URL:              url,
-		Method:           method,
-		RequestPayload:   payload,
-		Options:          opt,
-		CompressionType:  opt.Compression,
+		UniqueIdentifier: opt.GenerateIdentifier(), // Generate unique request identifier
+		URL:              url,                      // Request URL
+		Method:           method,                   // HTTP method
+		RequestPayload:   payload,                  // Request payload
+		Options:          opt,                      // Request options
+		CompressionType:  opt.Compression,          // Compression type from options
 	}
 }
 
-// Bytes is a helper function to get the underlying bytes.Buffer []byte
+// Bytes returns the response body as a byte slice
 func (r *Response) Bytes() []byte {
 	return r.Body.Bytes()
 }
 
-// String is a helper function to get the underlying bytes.Buffer string
+// String returns the response body as a string
 func (r *Response) String() string {
 	return r.Body.String()
 }
 
+// Length returns the length of the response body
 func (r *Response) Length() int64 {
 	return int64(r.Body.Len())
 }
 
+// PopulateResponse populates the Response struct with data from an http.Response
 func (r *Response) PopulateResponse(resp *http.Response, start time.Time) {
-	r.Status = resp.Status
-	r.StatusCode = resp.StatusCode
-	r.Proto = resp.Proto
-	r.Header = resp.Header
-	r.TransferEncoding = resp.TransferEncoding
-	// store cookies from the response
-	r.Cookies = resp.Cookies()
-	r.AccessTime = time.Since(start)
-	r.Uncompressed = resp.Uncompressed
-	r.TLS = resp.TLS
+	r.Status = resp.Status                     // Set HTTP status message
+	r.StatusCode = resp.StatusCode             // Set HTTP status code
+	r.Proto = resp.Proto                       // Set protocol used
+	r.Header = resp.Header                     // Copy response headers
+	r.TransferEncoding = resp.TransferEncoding // Copy transfer encoding
+	r.Cookies = resp.Cookies()                 // Copy response cookies
+	r.AccessTime = time.Since(start)           // Calculate and set access time
+	r.Uncompressed = resp.Uncompressed         // Set uncompressed flag
+	r.TLS = resp.TLS                           // Copy TLS connection state
 
-	// Check for redirects
+	// Check and record if the request was redirected
 	if len(resp.Request.URL.String()) != len(r.URL) {
-		r.Redirected = true
-		r.Location = resp.Request.URL.String()
+		r.Redirected = true                    // Mark as redirected
+		r.Location = resp.Request.URL.String() // Set the new location
 	}
 }

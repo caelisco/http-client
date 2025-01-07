@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"compress/zlib"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -18,24 +19,40 @@ import (
 	"github.com/oklog/ulid/v2"
 )
 
-type CompressionType string
-type UniqueIdentifierType string
-type UploadType string
-
+// ua defines the default User-Agent string for requests
 const ua = "caelisco/http-client/v1.0.0"
 
+// CompressionType defines the compression algorithm used for HTTP requests.
+// It supports standard compression types (gzip, deflate, brotli) as well as
+// custom compression implementations.
+type CompressionType string
+
+// Compression types supported by the client
 const (
-	CompressionNone    CompressionType = ""
-	CompressionGzip    CompressionType = "gzip"
-	CompressionDeflate CompressionType = "deflate"
-	CompressionBrotli  CompressionType = "br"
-	CompressionCustom  CompressionType = "custom"
+	CompressionNone    CompressionType = ""        // No compression
+	CompressionGzip    CompressionType = "gzip"    // Gzip compression (RFC 1952)
+	CompressionDeflate CompressionType = "deflate" // Deflate compression (RFC 1951)
+	CompressionBrotli  CompressionType = "br"      // Brotli compression
+	CompressionCustom  CompressionType = "custom"  // Custom compression implementation
 )
 
+// UniqueIdentifierType defines the type of unique identifier to use for request tracing.
+// It supports both UUID and ULID formats.
+type UniqueIdentifierType string
+
+// Supported identifier types for request tracing
 const (
-	IdentifierNone UniqueIdentifierType = ""
-	IdentifierUUID UniqueIdentifierType = "uuid"
-	IdentifierULID UniqueIdentifierType = "ulid"
+	IdentifierNone UniqueIdentifierType = ""     // No identifier
+	IdentifierUUID UniqueIdentifierType = "uuid" // UUID v4
+	IdentifierULID UniqueIdentifierType = "ulid" // ULID timestamp-based identifier
+)
+
+// Common errors returned by Option methods
+var (
+	ErrInvalidWriterType  = errors.New("invalid writer type")
+	ErrMissingFilePath    = errors.New("file path must be specified when using WriteToFile")
+	ErrUnexpectedFilePath = errors.New("filepath should not be provided when using WriteToBuffer")
+	ErrInvalidCompression = errors.New("unsupported compression type")
 )
 
 // Option provides configuration for HTTP requests. It allows customization of various aspects
@@ -48,7 +65,7 @@ type Option struct {
 	Cookies                  []*http.Cookie                                 // Cookies to be included in the request
 	ProtocolScheme           string                                         // define a custom protocol scheme. It defaults to https
 	Compression              CompressionType                                // CompressionType to use: none, gzip, deflate or brotli
-	CustomCompressionType    CompressionType                                //
+	CustomCompressionType    CompressionType                                // When using a custom compression, specify the type to be used as the content-encoding header.
 	CustomCompressor         func(w *io.PipeWriter) (io.WriteCloser, error) // Function for custom compression
 	UserAgent                string                                         // User Agent to send with requests
 	FollowRedirect           bool                                           // Disable or enable redirects. Default is true i.e.: follow redirects
@@ -173,6 +190,42 @@ func (opt *Option) SetCompression(compressionType CompressionType) {
 	opt.Compression = compressionType
 }
 
+// CreatePayloadReader converts the given payload into an io.Reader along with its size.
+// Supported payload types include:
+// - nil: Returns a nil reader and a size of -1.
+// - []byte: Returns a bytes.Reader for the byte slice and its length as size.
+// - io.Reader: Returns the reader and attempts to determine its size if it implements io.Seeker.
+// - string: Returns a strings.Reader for the string and its length as size.
+// For unsupported payload types, an error is returned.
+func (opt *Option) CreatePayloadReader(payload any) (io.Reader, int64, error) {
+	switch v := payload.(type) {
+	case nil:
+		// No payload, return nil reader and size -1
+		return nil, -1, nil
+	case []byte:
+		// Byte slice payload, return bytes.Reader and its length
+		opt.LogVerbose("Setting payload reader", "reader", "bytes.Reader")
+		return bytes.NewReader(v), int64(len(v)), nil
+	case io.Reader:
+		// io.Reader payload, determine size if possible using io.Seeker
+		size := int64(-1)
+		if seeker, ok := v.(io.Seeker); ok {
+			currentPos, _ := seeker.Seek(0, io.SeekCurrent)
+			size, _ = seeker.Seek(0, io.SeekEnd)
+			seeker.Seek(currentPos, io.SeekStart)
+		}
+		opt.LogVerbose("Setting payload reader", "reader", "io.Reader")
+		return v, size, nil
+	case string:
+		// String payload, return strings.Reader and its length
+		opt.LogVerbose("Setting payload reader", "reader", "strings.Reader")
+		return strings.NewReader(v), int64(len(v)), nil
+	default:
+		// Unsupported payload type, return an error
+		return nil, -1, fmt.Errorf("unsupported payload type: %T", payload)
+	}
+}
+
 // GetCompressor returns an appropriate io.WriteCloser based on the configured compression type.
 // Returns an error if the compression type is unsupported or if a custom compressor
 // is not properly configured.
@@ -189,9 +242,9 @@ func (opt *Option) GetCompressor(w *io.PipeWriter) (io.WriteCloser, error) {
 			writer, err := opt.CustomCompressor(w)
 			return writer, err
 		}
-		return nil, fmt.Errorf("custom compressor function is not defined")
+		return nil, ErrInvalidCompression
 	default:
-		return nil, fmt.Errorf("unsupported compression type: %s", opt.Compression)
+		return nil, ErrInvalidCompression
 	}
 }
 
@@ -247,7 +300,7 @@ func (opt *Option) InitialiseWriter() (io.WriteCloser, error) {
 	switch opt.ResponseWriter.Type {
 	case WriteToFile:
 		if opt.ResponseWriter.FilePath == "" {
-			return nil, fmt.Errorf("file path must be specified when using WriteToFile")
+			return nil, ErrMissingFilePath
 		}
 		file, err := os.Create(opt.ResponseWriter.FilePath)
 		if err != nil {
@@ -255,9 +308,12 @@ func (opt *Option) InitialiseWriter() (io.WriteCloser, error) {
 		}
 		opt.ResponseWriter.writer = file
 	case WriteToBuffer:
+		if opt.ResponseWriter.FilePath != "" {
+			return nil, ErrUnexpectedFilePath
+		}
 		opt.ResponseWriter.writer = &WriteCloserBuffer{Buffer: &bytes.Buffer{}}
 	default:
-		return nil, fmt.Errorf("invalid writer type: %s", opt.ResponseWriter.Type)
+		return nil, ErrInvalidWriterType
 	}
 	return opt.ResponseWriter.writer, nil
 }
@@ -275,16 +331,16 @@ func (opt *Option) SetOutput(writerType ResponseWriterType, filepath ...string) 
 	switch writerType {
 	case WriteToFile:
 		if len(filepath) == 0 {
-			return fmt.Errorf("filepath is required when using WriteToFile")
+			return ErrMissingFilePath
 		}
 		opt.ResponseWriter.FilePath = filepath[0]
 	case WriteToBuffer:
 		if len(filepath) > 0 {
-			return fmt.Errorf("filepath should not be provided when using WriteToBuffer")
+			return ErrUnexpectedFilePath
 		}
 		opt.ResponseWriter.FilePath = ""
 	default:
-		return fmt.Errorf("invalid writer type: %s", writerType)
+		return ErrInvalidWriterType
 	}
 
 	return nil
