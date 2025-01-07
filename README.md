@@ -164,6 +164,6 @@ opt.OnUploadProgress = func(bytesRead, totalBytes int64) {
     fmt.Printf("Upload progress: %.2f%%\n", progress)
 }
 // send the file
-resp, err := client.Post("https://example.com/upload", file, opt)
+resp, err := client.Post(url, file, opt)
 ```
 
