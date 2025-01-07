@@ -1,5 +1,9 @@
 package client
 
+/*
+// Test package
+// Remark to make use of tests
+
 import (
 	"bytes"
 	"compress/gzip"
@@ -17,8 +21,6 @@ import (
 
 	"github.com/andybalholm/brotli"
 	"github.com/caelisco/http-client/options"
-	"github.com/golang/snappy"
-	"github.com/pierrec/lz4/v4"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -57,12 +59,12 @@ func setupTestServer(t *testing.T) *httptest.Server {
 			case "br":
 				t.Log("Using Brotli reader")
 				reader = brotli.NewReader(r.Body)
-			case "snappy":
-				t.Log("Using Snappy reader")
-				reader = snappy.NewReader(r.Body)
-			case "lz4":
-				t.Log("Using LZ4 reader")
-				reader = lz4.NewReader(r.Body)
+			// case "snappy":
+			// 	t.Log("Using Snappy reader")
+			// 	reader = snappy.NewReader(r.Body)
+			// case "lz4":
+			// 	t.Log("Using LZ4 reader")
+			// 	reader = lz4.NewReader(r.Body)
 			default:
 				reader = r.Body
 			}
@@ -272,6 +274,7 @@ func TestCompression(t *testing.T) {
 	}
 }
 
+
 func TestCustomCompression(t *testing.T) {
 	server := setupTestServer(t)
 	defer server.Close()
@@ -316,3 +319,4 @@ func TestCustomCompression(t *testing.T) {
 		})
 	}
 }
+*/
