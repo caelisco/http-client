@@ -13,6 +13,10 @@ The reusable client is typically more useful in scenarios where you need to work
 
 The readme contains documentation for v1.0.0
 
+# Test cases
+
+Test cases are available in [func_test.go](https://github.com/caelisco/http-client/blob/main/test/func_test.go)
+
 # Basic example
 ```go
 package main

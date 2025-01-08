@@ -1,9 +1,5 @@
 package client
 
-/*
-// Test package
-// Remark to make use of tests
-
 import (
 	"bytes"
 	"compress/gzip"
@@ -20,7 +16,10 @@ import (
 	"time"
 
 	"github.com/andybalholm/brotli"
+	client "github.com/caelisco/http-client"
 	"github.com/caelisco/http-client/options"
+	"github.com/golang/snappy"
+	"github.com/pierrec/lz4/v4"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -59,12 +58,12 @@ func setupTestServer(t *testing.T) *httptest.Server {
 			case "br":
 				t.Log("Using Brotli reader")
 				reader = brotli.NewReader(r.Body)
-			// case "snappy":
-			// 	t.Log("Using Snappy reader")
-			// 	reader = snappy.NewReader(r.Body)
-			// case "lz4":
-			// 	t.Log("Using LZ4 reader")
-			// 	reader = lz4.NewReader(r.Body)
+			case "snappy":
+				t.Log("Using Snappy reader")
+				reader = snappy.NewReader(r.Body)
+			case "lz4":
+				t.Log("Using LZ4 reader")
+				reader = lz4.NewReader(r.Body)
 			default:
 				reader = r.Body
 			}
@@ -120,7 +119,7 @@ func TestBasicRequests(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			resp, err := Custom(tt.method, server.URL+tt.path, nil)
+			resp, err := client.Custom(tt.method, server.URL+tt.path, nil)
 			assert.NoError(t, err)
 			assert.Equal(t, tt.expectedStatus, resp.StatusCode)
 		})
@@ -151,7 +150,7 @@ func TestFileUpload(t *testing.T) {
 	}
 
 	// Upload the file
-	resp, err := Post(server.URL+"/upload", tmpfile, opt)
+	resp, err := client.Post(server.URL+"/upload", tmpfile, opt)
 	assert.NoError(t, err)
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 
@@ -184,7 +183,7 @@ func TestFileDownload(t *testing.T) {
 	opt.SetFileOutput(downloadPath)
 
 	// Download the file
-	resp, err := Get(server.URL+"/download", opt)
+	resp, err := client.Get(server.URL+"/download", opt)
 	assert.NoError(t, err)
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 
@@ -204,7 +203,7 @@ func TestCustomHeaders(t *testing.T) {
 	opt := options.New()
 	opt.AddHeader("X-Custom-Header", "test-value")
 
-	resp, err := Get(server.URL+"/echo-headers", opt)
+	resp, err := client.Get(server.URL+"/echo-headers", opt)
 	assert.NoError(t, err)
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 	assert.Equal(t, "test-value", resp.Header.Get("Echo-X-Custom-Header"))
@@ -229,7 +228,7 @@ func TestBufferSizes(t *testing.T) {
 			opt.SetDownloadBufferSize(tt.bufferSize)
 
 			start := time.Now()
-			resp, err := Get(server.URL+"/download", opt)
+			resp, err := client.Get(server.URL+"/download", opt)
 			duration := time.Since(start)
 
 			assert.NoError(t, err)
@@ -264,7 +263,7 @@ func TestCompression(t *testing.T) {
 
 			t.Logf("[%s] Uncompressed size: %d bytes", tt.name, len(largeString))
 
-			resp, err := Post(server.URL+"/upload", largeString, opt)
+			resp, err := client.Post(server.URL+"/upload", largeString, opt)
 			assert.NoError(t, err)
 
 			assert.Equal(t, http.StatusOK, resp.StatusCode)
@@ -273,7 +272,6 @@ func TestCompression(t *testing.T) {
 		})
 	}
 }
-
 
 func TestCustomCompression(t *testing.T) {
 	server := setupTestServer(t)
@@ -298,7 +296,7 @@ func TestCustomCompression(t *testing.T) {
 			opt.SetCompression(tt.compression)
 			if tt.encoding == "snappy" {
 				opt.CustomCompressor = func(w *io.PipeWriter) (io.WriteCloser, error) {
-					return snappy.NewWriter(w), nil
+					return snappy.NewBufferedWriter(w), nil
 				}
 			}
 			if tt.encoding == "lz4" {
@@ -307,10 +305,11 @@ func TestCustomCompression(t *testing.T) {
 				}
 			}
 			opt.CustomCompressionType = options.CompressionType(tt.encoding)
+			t.Logf("Custom compression type set to: %s", opt.CustomCompressionType)
 
 			t.Logf("[%s] Uncompressed size: %d bytes", tt.name, len(largeString))
 
-			resp, err := Post(server.URL+"/upload", largeString, opt)
+			resp, err := client.Post(server.URL+"/upload", largeString, opt)
 			assert.NoError(t, err)
 
 			assert.Equal(t, http.StatusOK, resp.StatusCode)
@@ -319,4 +318,3 @@ func TestCustomCompression(t *testing.T) {
 		})
 	}
 }
-*/

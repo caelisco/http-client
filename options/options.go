@@ -8,9 +8,11 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"mime"
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -196,6 +198,7 @@ func (opt *Option) AddHeader(key string, value string) {
 	if opt.Header == nil {
 		opt.Header = http.Header{}
 	}
+	// Use set over add to replace the key with the value
 	opt.Header.Set(key, value)
 }
 
@@ -267,6 +270,45 @@ func (opt *Option) CreatePayloadReader(payload any) (io.Reader, int64, error) {
 		// Unsupported payload type, return an error
 		return nil, -1, fmt.Errorf("unsupported payload type: %T", payload)
 	}
+}
+
+// InferContentType determines the MIME type of a file based on its content and extension.
+// If it is unable to determine a MIME type, it defaults to application/octet-stream.
+func (opt *Option) InferContentType(file *os.File, fileInfo os.FileInfo) error {
+	// check if a content type has already been defined
+	if opt.Header.Get("Content-Type") != "" {
+		return nil
+	}
+
+	// default content type: application/octet-stream
+	contentType := "application/octet-stream"
+
+	// Use a buffer to read a portion of the file for detecting its MIME type.
+	buffer := make([]byte, 512)
+	_, err := file.Read(buffer)
+	if err != nil {
+		return err
+	}
+
+	// Reset the file pointer after reading.
+	if _, err := file.Seek(0, 0); err != nil {
+		return err
+	}
+
+	// Try to detect MIME type from file content.
+	detectedContentType := http.DetectContentType(buffer)
+	if detectedContentType != "" {
+		contentType = detectedContentType
+	}
+
+	// Check for MIME type based on file extension and use it if available.
+	extMimeType := mime.TypeByExtension(filepath.Ext(fileInfo.Name()))
+	if extMimeType != "" {
+		contentType = extMimeType
+	}
+
+	opt.AddHeader("Content-Type", contentType)
+	return nil
 }
 
 // GetCompressor returns an appropriate io.WriteCloser based on the configured compression type.

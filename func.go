@@ -31,6 +31,9 @@ func doRequest(client *http.Client, method string, url string, payload any, opts
 	st := time.Now()
 
 	opt := options.New(opts...)
+	if opt.UniqueIdentifierType != options.IdentifierNone {
+		opt.AddHeader("X-TraceID", opt.GenerateIdentifier())
+	}
 
 	if client.Transport == nil {
 		client.Transport = opt.Transport
@@ -99,21 +102,21 @@ func doRequest(client *http.Client, method string, url string, payload any, opts
 		}()
 
 		if opt.Compression != options.CompressionCustom {
-			opt.Header.Add("Content-Encoding", string(opt.Compression))
+			opt.Header.Set("Content-Encoding", string(opt.Compression))
 		} else {
 			if opt.CustomCompressionType != "" {
-				opt.Header.Add("Content-Encoding", string(opt.CustomCompressionType))
+				opt.Header.Set("Content-Encoding", string(opt.CustomCompressionType))
 			} else {
-				opt.Header.Add("Content-Encoding", "application/octet-stream")
+				opt.Header.Set("Content-Encoding", "application/octet-stream")
 			}
 		}
 		// Remove Content-Length header since we're streaming and do not know the size of the file in advance
 		opt.Header.Del("Content-Length")
 		// Add Transfer-Encoding header to indicate streaming
-		opt.Header.Add("Transfer-Encoding", "chunked")
+		opt.Header.Set("Transfer-Encoding", "chunked")
 	} else {
 		// add the header for the content length if not compressed
-		opt.Header.Add("Content-Length", fmt.Sprintf("%d", totalSize))
+		opt.Header.Set("Content-Length", fmt.Sprintf("%d", totalSize))
 	}
 
 	var req *http.Request
@@ -274,22 +277,12 @@ func PostFormData(url string, payload map[string]string, opts ...*options.Option
 // Optionally, you can provide additional Options to customize the request.
 // Returns the HTTP response and an error if any.
 func PostFile(url string, filename string, opts ...*options.Option) (response.Response, error) {
-	_, err := os.Stat(filename)
+	file, opt, err := prepareFile(filename, opts...)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return response.Response{}, fmt.Errorf("file does not exist: %s", filename)
-		}
-		return response.Response{}, fmt.Errorf("failed to access file: %v", err)
+		return response.Response{}, err
 	}
 
-	file, err := os.Open(filename)
-	if err != nil {
-		return response.Response{}, fmt.Errorf("failed to open file: %v", err)
-	}
-	defer file.Close()
-
-	// Use the Post method to send the file
-	return Post(url, file, opts...)
+	return Post(url, file, opt)
 }
 
 // Put performs an HTTP PUT to the specified URL with the given payload.
@@ -321,22 +314,12 @@ func PutFormData(url string, payload map[string]string, opts ...*options.Option)
 // Optionally, you can provide additional Options to customize the request.
 // Returns the HTTP response and an error if any.
 func PutFile(url string, filename string, opts ...*options.Option) (response.Response, error) {
-	_, err := os.Stat(filename)
+	file, opt, err := prepareFile(filename, opts...)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return response.Response{}, fmt.Errorf("file does not exist: %s", filename)
-		}
-		return response.Response{}, fmt.Errorf("failed to access file: %v", err)
+		return response.Response{}, err
 	}
 
-	file, err := os.Open(filename)
-	if err != nil {
-		return response.Response{}, fmt.Errorf("failed to open file: %v", err)
-	}
-	defer file.Close()
-
-	// Use the Post method to send the file
-	return Put(url, file, opts...)
+	return Put(url, file, opt)
 }
 
 // Patch performs an HTTP PATCH to the specified URL with the given payload.
@@ -368,22 +351,12 @@ func PatchFormData(url string, payload map[string]string, opts ...*options.Optio
 // Optionally, you can provide additional Options to customize the request.
 // Returns the HTTP response and an error if any.
 func PatchFile(url string, filename string, opts ...*options.Option) (response.Response, error) {
-	_, err := os.Stat(filename)
+	file, opt, err := prepareFile(filename, opts...)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return response.Response{}, fmt.Errorf("file does not exist: %s", filename)
-		}
-		return response.Response{}, fmt.Errorf("failed to access file: %v", err)
+		return response.Response{}, err
 	}
 
-	file, err := os.Open(filename)
-	if err != nil {
-		return response.Response{}, fmt.Errorf("failed to open file: %v", err)
-	}
-	defer file.Close()
-
-	// Use the Post method to send the file
-	return Patch(url, file, opts...)
+	return Patch(url, file, opt)
 }
 
 // Delete performs an HTTP DELETE to the specified URL.
@@ -465,4 +438,25 @@ func normaliseURL(url string, protocolScheme string) (string, error) {
 	}
 
 	return url, nil
+}
+
+func prepareFile(filename string, opts ...*options.Option) (*os.File, *options.Option, error) {
+	fileinfo, err := os.Stat(filename)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil, fmt.Errorf("file does not exist: %s", filename)
+		}
+		return nil, nil, fmt.Errorf("failed to access file: %v", err)
+	}
+
+	file, err := os.Open(filename)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to open file: %v", err)
+	}
+	defer file.Close()
+
+	opt := options.New(opts...)
+	opt.InferContentType(file, fileinfo)
+
+	return file, opt, nil
 }

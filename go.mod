@@ -3,7 +3,7 @@ module github.com/caelisco/http-client
 go 1.23.4
 
 require (
-	github.com/andybalholm/brotli v1.1.0
+	github.com/andybalholm/brotli v1.1.1
 	github.com/google/uuid v1.6.0
 )
 
