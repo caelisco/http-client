@@ -59,6 +59,7 @@ var (
 // of the request including headers, compression, logging, response handling, and progress tracking.
 // If no options are provided when making a request, a default configuration is automatically generated.
 type Option struct {
+	initialised              bool                                           // Internal - determine if the struct was initialised with a call to New()
 	Verbose                  bool                                           // Whether logging should be verbose or not
 	Logger                   slog.Logger                                    // Logging - default uses the slog TextHandler
 	Header                   http.Header                                    // Headers to be included in the request
@@ -83,7 +84,24 @@ type Option struct {
 // via the variadic parameter, they will be merged with the default settings, with the provided
 // options taking precedence.
 func New(opts ...*Option) *Option {
-	opt := &Option{
+	if len(opts) > 0 {
+		// if the variadic parameter Option
+		if opts[0].initialised {
+			return opts[0]
+		}
+		// If opts[0] is not initialized, initialize and merge it
+		opt := defaultOption()
+		opt.Merge(opts[0])
+		return opt
+	}
+	// No options provided; return a new default Option
+	return defaultOption()
+}
+
+// defaultOption initializes and returns a default Option with pre-configured settings.
+func defaultOption() *Option {
+	return &Option{
+		initialised:              true,
 		Verbose:                  false,
 		Logger:                   *slog.New(slog.NewTextHandler(os.Stdout, nil)),
 		Header:                   http.Header{},
@@ -97,19 +115,44 @@ func New(opts ...*Option) *Option {
 			Type: WriteToBuffer,
 		},
 	}
-
-	// If an Option is provided as a variadic merge it with the default one.
-	// The source (opts[0]) takes preference when assigning variables.
-	if len(opts) > 0 && opts[0] != nil {
-		opt.Merge(opts[0])
-	}
-
-	return opt
 }
 
-// LogVerbose logs a message with the configured logger if verbose logging is enabled.
+// defaultTransport creates and returns an http.Transport configured for typical internal/low-latency
+// operations. The settings are optimized for reliable HTTP client usage in environments where
+// request volume is moderate and network conditions are generally good.
+func defaultTransport() *http.Transport {
+	return &http.Transport{
+		// Use proxy settings from environment variables (HTTP_PROXY, HTTPS_PROXY, NO_PROXY)
+		Proxy: http.ProxyFromEnvironment,
+
+		// Configure the dialer with conservative timeouts for typical internal network conditions
+		DialContext: (&net.Dialer{
+			Timeout:   15 * time.Second, // Shorter timeout for internal services
+			KeepAlive: 15 * time.Second, // Moderate keep-alive for connection reuse
+			DualStack: true,             // Support both IPv4 and IPv6
+		}).DialContext,
+
+		// Connection pooling settings for moderate traffic
+		MaxIdleConns:        20, // Total idle connections in the pool
+		MaxIdleConnsPerHost: 5,  // Idle connections per host (internal services typically use few hosts)
+		MaxConnsPerHost:     10, // Limit concurrent connections per host
+
+		// Timeout settings optimized for internal network conditions
+		IdleConnTimeout:       90 * time.Second, // How long to keep idle connections
+		ResponseHeaderTimeout: 10 * time.Second, // Max time to wait for response headers
+		TLSHandshakeTimeout:   5 * time.Second,  // Max time for TLS handshake
+		ExpectContinueTimeout: 1 * time.Second,  // Timeout for 100-continue responses
+
+		// Protocol and behavior settings
+		ForceAttemptHTTP2:  true,  // Prefer HTTP/2 when available
+		DisableCompression: false, // Allow response compression
+		DisableKeepAlives:  false, // Enable connection reuse
+	}
+}
+
+// Log logs a message with the configured logger if verbose logging is enabled.
 // The message will be logged at INFO level with any additional arguments provided.
-func (opt *Option) LogVerbose(msg string, args ...any) {
+func (opt *Option) Log(msg string, args ...any) {
 	if opt.Verbose {
 		opt.Logger.Info(msg, args...)
 	}
@@ -204,7 +247,7 @@ func (opt *Option) CreatePayloadReader(payload any) (io.Reader, int64, error) {
 		return nil, -1, nil
 	case []byte:
 		// Byte slice payload, return bytes.Reader and its length
-		opt.LogVerbose("Setting payload reader", "reader", "bytes.Reader")
+		opt.Log("Setting payload reader", "reader", "bytes.Reader")
 		return bytes.NewReader(v), int64(len(v)), nil
 	case io.Reader:
 		// io.Reader payload, determine size if possible using io.Seeker
@@ -214,11 +257,11 @@ func (opt *Option) CreatePayloadReader(payload any) (io.Reader, int64, error) {
 			size, _ = seeker.Seek(0, io.SeekEnd)
 			seeker.Seek(currentPos, io.SeekStart)
 		}
-		opt.LogVerbose("Setting payload reader", "reader", "io.Reader")
+		opt.Log("Setting payload reader", "reader", "io.Reader")
 		return v, size, nil
 	case string:
 		// String payload, return strings.Reader and its length
-		opt.LogVerbose("Setting payload reader", "reader", "strings.Reader")
+		opt.Log("Setting payload reader", "reader", "strings.Reader")
 		return strings.NewReader(v), int64(len(v)), nil
 	default:
 		// Unsupported payload type, return an error
@@ -438,38 +481,5 @@ func (opt *Option) Merge(src *Option) {
 
 	if src.OnDownloadProgress != nil {
 		opt.OnDownloadProgress = src.OnDownloadProgress
-	}
-}
-
-// defaultTransport creates and returns an http.Transport configured for typical internal/low-latency
-// operations. The settings are optimized for reliable HTTP client usage in environments where
-// request volume is moderate and network conditions are generally good.
-func defaultTransport() *http.Transport {
-	return &http.Transport{
-		// Use proxy settings from environment variables (HTTP_PROXY, HTTPS_PROXY, NO_PROXY)
-		Proxy: http.ProxyFromEnvironment,
-
-		// Configure the dialer with conservative timeouts for typical internal network conditions
-		DialContext: (&net.Dialer{
-			Timeout:   15 * time.Second, // Shorter timeout for internal services
-			KeepAlive: 15 * time.Second, // Moderate keep-alive for connection reuse
-			DualStack: true,             // Support both IPv4 and IPv6
-		}).DialContext,
-
-		// Connection pooling settings for moderate traffic
-		MaxIdleConns:        20, // Total idle connections in the pool
-		MaxIdleConnsPerHost: 5,  // Idle connections per host (internal services typically use few hosts)
-		MaxConnsPerHost:     10, // Limit concurrent connections per host
-
-		// Timeout settings optimized for internal network conditions
-		IdleConnTimeout:       90 * time.Second, // How long to keep idle connections
-		ResponseHeaderTimeout: 10 * time.Second, // Max time to wait for response headers
-		TLSHandshakeTimeout:   5 * time.Second,  // Max time for TLS handshake
-		ExpectContinueTimeout: 1 * time.Second,  // Timeout for 100-continue responses
-
-		// Protocol and behavior settings
-		ForceAttemptHTTP2:  true,  // Prefer HTTP/2 when available
-		DisableCompression: false, // Allow response compression
-		DisableKeepAlives:  false, // Enable connection reuse
 	}
 }

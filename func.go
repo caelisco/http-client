@@ -65,7 +65,7 @@ func doRequest(client *http.Client, method string, url string, payload any, opts
 	var pw *io.PipeWriter
 	if payloadReader != nil && opt.Compression != options.CompressionNone {
 
-		opt.LogVerbose("Compressing data", "compression type", opt.Compression)
+		opt.Log("Compressing data", "compression type", opt.Compression)
 		pr, pw = io.Pipe()
 		// Goroutine to handle compression and closing of resources
 		go func() {
@@ -122,10 +122,10 @@ func doRequest(client *http.Client, method string, url string, payload any, opts
 	// We will assume that most requests to the server will not be compressed.
 	// If compression is being used, the pr (io.PipeReader) will be set
 	if pr == nil {
-		opt.LogVerbose("setting up NewRequest", "reader", "io.ReadCloser")
+		opt.Log("setting up NewRequest", "reader", "io.ReadCloser")
 		req, err = http.NewRequest(method, url, payloadReader)
 	} else {
-		opt.LogVerbose("setting up NewRequest", "reader", "io.PipeReader")
+		opt.Log("setting up NewRequest", "reader", "io.PipeReader")
 		req, err = http.NewRequest(method, url, pr)
 	}
 
@@ -149,7 +149,7 @@ func doRequest(client *http.Client, method string, url string, payload any, opts
 	// a get. There is an option to preserve the original request method type when following the
 	// redirect.
 	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-		opt.LogVerbose("Server wanted to redirect", "Location", req.Response.Header.Get("Location"), "status code", req.Response.StatusCode)
+		opt.Log("Server wanted to redirect", "Location", req.Response.Header.Get("Location"), "status code", req.Response.StatusCode)
 
 		// Check if we need to follow redirects
 		if !opt.FollowRedirect {
@@ -161,9 +161,9 @@ func doRequest(client *http.Client, method string, url string, payload any, opts
 		// will be used.
 		if opt.PreserveMethodOnRedirect {
 			req.Method = via[0].Method // Use the original method from the first request
-			opt.LogVerbose("Preserving original method", "http.Method", req.Method)
+			opt.Log("Preserving original method", "http.Method", req.Method)
 		} else {
-			opt.LogVerbose("Not preserving method", "http.Method", req.Method)
+			opt.Log("Not preserving method", "http.Method", req.Method)
 		}
 
 		return nil
@@ -176,7 +176,7 @@ func doRequest(client *http.Client, method string, url string, payload any, opts
 	}
 	defer writer.Close()
 
-	opt.LogVerbose("sending request", "url", req.URL, "method", method, "headers", req.Header)
+	opt.Log("sending request", "url", req.URL, "method", method, "headers", req.Header)
 	response.RequestTime = time.Now().Unix()
 	r, err := client.Do(req)
 	if err != nil {
@@ -187,7 +187,7 @@ func doRequest(client *http.Client, method string, url string, payload any, opts
 	response.ResponseTime = time.Now().Unix()
 
 	// Added logging for response details
-	opt.LogVerbose("Response received",
+	opt.Log("Response received",
 		"status", r.Status,
 		"content-length", r.ContentLength,
 		"content-type", r.Header.Get("Content-Type"))
@@ -201,7 +201,7 @@ func doRequest(client *http.Client, method string, url string, payload any, opts
 	defer writer.Close()
 
 	// Added logging before body copy
-	opt.LogVerbose("Preparing to copy response body",
+	opt.Log("Preparing to copy response body",
 		"buffer-size", opt.DownloadBufferSize,
 		"progress-tracking-enabled", opt.OnDownloadProgress != nil)
 
@@ -224,11 +224,11 @@ func doRequest(client *http.Client, method string, url string, payload any, opts
 		response.Body = *buf
 	}
 
-	opt.LogVerbose("io.Copy complete", "writer", writer)
+	opt.Log("io.Copy complete", "writer", writer)
 	response.ProcessedTime = time.Now().Unix()
 
 	// Added logging after body copy
-	opt.LogVerbose("Response body copy completed",
+	opt.Log("Response body copy completed",
 		"error", err,
 		"processed-time", response.ProcessedTime)
 
