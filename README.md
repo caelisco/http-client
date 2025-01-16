@@ -1,7 +1,19 @@
 # http-client
-A small wrapper around the HTTP Client in Go.
 
-The client is not necessarily feature complete and is designed to work with simple requests to an HTTP server.
+http-client provides a convenient way to interact with the web by creating an API that is wrapped around Go's http.Client
+
+What started as a simple project for performing basic HTTP Methods with an underlying `bytes.Buffer` now includes:
+- API's to send urlencoded forms, upload files based on POST, PUT, PATCH
+- Implementation to send data based on different readers
+ - []byte
+ - byte.Buffer
+ - io.Reader
+ - string
+- Receive output as a byte.Buffer or write directly to a file
+- Following redirects
+- Keeping HTTP Method when following redirects (optionally)
+- Compression (gzip, deflate and brotli)
+- Custom compression
 
 It has two modes of operation: 
 1. Normal HTTP method function calls
@@ -16,6 +28,8 @@ The readme contains documentation for v1.0.0
 # Test cases
 
 Test cases are available in [func_test.go](https://github.com/caelisco/http-client/blob/main/test/func_test.go)
+
+They also provide some useful real-world documentation.
 
 # Basic example
 ```go

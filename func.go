@@ -281,6 +281,7 @@ func PostFile(url string, filename string, opts ...*options.Option) (response.Re
 	if err != nil {
 		return response.Response{}, err
 	}
+	defer file.Close()
 
 	return Post(url, file, opt)
 }
@@ -318,7 +319,7 @@ func PutFile(url string, filename string, opts ...*options.Option) (response.Res
 	if err != nil {
 		return response.Response{}, err
 	}
-
+	defer file.Close()
 	return Put(url, file, opt)
 }
 
@@ -355,7 +356,7 @@ func PatchFile(url string, filename string, opts ...*options.Option) (response.R
 	if err != nil {
 		return response.Response{}, err
 	}
-
+	defer file.Close()
 	return Patch(url, file, opt)
 }
 
@@ -453,7 +454,6 @@ func prepareFile(filename string, opts ...*options.Option) (*os.File, *options.O
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to open file: %v", err)
 	}
-	defer file.Close()
 
 	opt := options.New(opts...)
 	opt.InferContentType(file, fileinfo)

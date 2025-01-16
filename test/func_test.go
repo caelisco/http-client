@@ -1,6 +1,7 @@
-package client
+package client_test
 
 import (
+	"bufio"
 	"bytes"
 	"compress/gzip"
 	"compress/zlib"
@@ -15,12 +16,21 @@ import (
 	"testing"
 	"time"
 
+	"math/rand"
+
 	"github.com/andybalholm/brotli"
 	client "github.com/caelisco/http-client"
 	"github.com/caelisco/http-client/options"
+	"github.com/caelisco/http-client/response"
 	"github.com/golang/snappy"
 	"github.com/pierrec/lz4/v4"
 	"github.com/stretchr/testify/assert"
+)
+
+const (
+	charset   = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	fileSize  = 100 * 1024 * 1024 // 100MB in bytes
+	chunkSize = 1024 * 1024       // 1MB chunks for writing
 )
 
 func setupTestServer(t *testing.T) *httptest.Server {
@@ -126,11 +136,10 @@ func TestBasicRequests(t *testing.T) {
 	}
 }
 
-func TestFileUpload(t *testing.T) {
+func TestPostUpload(t *testing.T) {
 	server := setupTestServer(t)
 	defer server.Close()
 
-	// Create a temporary file
 	content := "Hello, World!"
 	tmpfile, err := os.CreateTemp("", "upload-*.txt")
 	assert.NoError(t, err)
@@ -139,6 +148,80 @@ func TestFileUpload(t *testing.T) {
 	_, err = tmpfile.WriteString(content)
 	assert.NoError(t, err)
 	tmpfile.Seek(0, 0)
+
+	var lastProgress float64
+	opt := options.New()
+	opt.OnUploadProgress = func(bytesRead, totalBytes int64) {
+		if totalBytes > 0 {
+			lastProgress = float64(bytesRead) / float64(totalBytes) * 100
+		}
+	}
+
+	resp, err := client.Post(server.URL+"/upload", tmpfile, opt)
+	assert.NoError(t, err)
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, float64(100), lastProgress)
+	assert.Equal(t, content, resp.Body.String())
+}
+
+func generateRandomString(length int) string {
+	result := make([]byte, length)
+	for i := range result {
+		result[i] = charset[rand.Intn(len(charset))]
+	}
+	return string(result)
+}
+
+func TestFileFuncUpload(t *testing.T) {
+	var err error
+	var resp response.Response
+
+	filename := "large-upload.txt"
+
+	file, err := os.Create(filename)
+	if err != nil {
+		fmt.Println("Error creating file:", err)
+		return
+	}
+
+	writer := bufio.NewWriter(file)
+	bytesWritten := 0
+
+	for bytesWritten < fileSize {
+		chunk := generateRandomString(chunkSize)
+		n, err := writer.WriteString(chunk)
+		if err != nil {
+			assert.NoError(t, err)
+			return
+		}
+		bytesWritten += n
+	}
+
+	err = writer.Flush()
+	if err != nil {
+		assert.NoError(t, err)
+	}
+
+	file.Close()
+
+	content, err := os.ReadFile(filename)
+	if err != nil {
+		assert.NoError(t, err)
+	}
+
+	server := setupTestServer(t)
+	defer server.Close()
+
+	tests := []struct {
+		name           string
+		method         string
+		expectedStatus int
+	}{
+		{"PostFile Request", http.MethodPost, http.StatusOK},
+		{"PutFile Request", http.MethodPut, http.StatusOK},
+		{"PatchFile Request", http.MethodPatch, http.StatusOK},
+	}
 
 	// Track upload progress
 	var lastProgress float64
@@ -149,30 +232,40 @@ func TestFileUpload(t *testing.T) {
 		}
 	}
 
-	// Upload the file
-	resp, err := client.Post(server.URL+"/upload", tmpfile, opt)
-	assert.NoError(t, err)
-	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	url := server.URL + "/upload"
 
-	// Verify progress tracking worked
-	assert.Equal(t, float64(100), lastProgress)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			switch tt.method {
+			case http.MethodPost:
+				resp, err = client.PostFile(url, filename, opt)
+			case http.MethodPut:
+				resp, err = client.PutFile(url, filename, opt)
+			case http.MethodPatch:
+				resp, err = client.PatchFile(url, filename, opt)
+			}
 
-	// Verify the echoed content matches
-	assert.Equal(t, content, resp.Body.String())
+			assert.NoError(t, err)
+
+			assert.Equal(t, http.StatusOK, resp.StatusCode)
+			assert.Equal(t, float64(100), lastProgress)
+			assert.Equal(t, content, resp.Body.Bytes())
+		})
+	}
+	// clean up resources
+	os.Remove(filename)
 }
 
 func TestFileDownload(t *testing.T) {
 	server := setupTestServer(t)
 	defer server.Close()
 
-	// Create temporary directory for download
 	tmpDir, err := os.MkdirTemp("", "download-test")
 	assert.NoError(t, err)
 	defer os.RemoveAll(tmpDir)
 
 	downloadPath := filepath.Join(tmpDir, "downloaded.txt")
 
-	// Track download progress
 	var lastProgress float64
 	opt := options.New()
 	opt.OnDownloadProgress = func(bytesRead, totalBytes int64) {
@@ -182,15 +275,12 @@ func TestFileDownload(t *testing.T) {
 	}
 	opt.SetFileOutput(downloadPath)
 
-	// Download the file
 	resp, err := client.Get(server.URL+"/download", opt)
 	assert.NoError(t, err)
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 
-	// Verify progress tracking worked
 	assert.Equal(t, float64(100), lastProgress)
 
-	// Verify file size
 	info, err := os.Stat(downloadPath)
 	assert.NoError(t, err)
 	assert.Equal(t, int64(1048576), info.Size())
@@ -243,7 +333,7 @@ func TestCompression(t *testing.T) {
 	server := setupTestServer(t)
 	defer server.Close()
 
-	largeString := strings.Repeat("hello world ", 1000) // 12,000 bytes uncompressed
+	largeString := strings.Repeat("hello world ", 1000000)
 
 	tests := []struct {
 		name        string
@@ -267,8 +357,7 @@ func TestCompression(t *testing.T) {
 			assert.NoError(t, err)
 
 			assert.Equal(t, http.StatusOK, resp.StatusCode)
-			//assert.Equal(t, largeString, resp.String())
-			t.Logf("resp: %s", resp.String())
+			assert.Equal(t, largeString, resp.String())
 		})
 	}
 }
@@ -277,7 +366,7 @@ func TestCustomCompression(t *testing.T) {
 	server := setupTestServer(t)
 	defer server.Close()
 
-	largeString := strings.Repeat("hello world ", 1000) // 12,000 bytes uncompressed
+	largeString := strings.Repeat("hello world ", 1000000)
 
 	tests := []struct {
 		name        string
@@ -313,8 +402,7 @@ func TestCustomCompression(t *testing.T) {
 			assert.NoError(t, err)
 
 			assert.Equal(t, http.StatusOK, resp.StatusCode)
-			//assert.Equal(t, largeString, resp.String())
-			t.Logf("resp: %s", resp.String())
+			assert.Equal(t, largeString, resp.String())
 		})
 	}
 }
