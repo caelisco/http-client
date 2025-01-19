@@ -5,9 +5,6 @@ import (
 	"io"
 	"log"
 	"net/http"
-	netURL "net/url"
-	"os"
-	"strings"
 	"time"
 
 	"github.com/caelisco/http-client/form"
@@ -138,9 +135,7 @@ func doRequest(client *http.Client, method string, url string, payload any, opts
 	}
 
 	// Set headers from the options
-	for k, v := range opt.Header {
-		req.Header[k] = v
-	}
+	req.Header = opt.Header
 
 	// Set cookies from the options
 	for _, v := range opt.Cookies {
@@ -406,57 +401,4 @@ func Trace(url string, opts ...*options.Option) (response.Response, error) {
 // Returns the HTTP response and an error if any.
 func Custom(method string, url string, payload any, opts ...*options.Option) (response.Response, error) {
 	return doRequest(client, method, url, payload, opts...)
-}
-
-func normaliseURL(url string, protocolScheme string) (string, error) {
-	url = strings.TrimSpace(url)
-
-	// First validate if the input URL has proper scheme format if it contains a colon
-	if strings.Contains(url, ":") {
-		if !strings.Contains(url, "://") {
-			return "", fmt.Errorf("invalid URL format: missing // after scheme")
-		}
-	}
-
-	if protocolScheme != "" {
-		url = strings.TrimPrefix(url, string(SchemeHTTP))
-		url = strings.TrimPrefix(url, string(SchemeHTTPS))
-		if !strings.Contains(protocolScheme, "://") {
-			protocolScheme += "://"
-		}
-		if !strings.HasPrefix(url, protocolScheme) {
-			url = protocolScheme + url
-		}
-	} else {
-		if !strings.HasPrefix(url, SchemeHTTP) && !strings.HasPrefix(url, SchemeHTTPS) {
-			url = SchemeHTTPS + url
-		}
-	}
-
-	// Parse the URL to validate it
-	if _, err := netURL.Parse(url); err != nil {
-		return "", err
-	}
-
-	return url, nil
-}
-
-func prepareFile(filename string, opts ...*options.Option) (*os.File, *options.Option, error) {
-	fileinfo, err := os.Stat(filename)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil, fmt.Errorf("file does not exist: %s", filename)
-		}
-		return nil, nil, fmt.Errorf("failed to access file: %v", err)
-	}
-
-	file, err := os.Open(filename)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to open file: %v", err)
-	}
-
-	opt := options.New(opts...)
-	opt.InferContentType(file, fileinfo)
-
-	return file, opt, nil
 }
