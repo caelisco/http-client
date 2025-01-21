@@ -15,3 +15,8 @@ func (wcb *WriteCloserBuffer) Close() error {
 	// No actual resource to close; just satisfies io.WriteCloser.
 	return nil
 }
+
+// Determine if the bytes.Buffer is empty
+func (w *WriteCloserBuffer) IsEmpty() bool {
+	return w == nil || w.Buffer == nil || w.Buffer.Len() == 0
+}

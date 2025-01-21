@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -29,9 +30,86 @@ import (
 
 const (
 	charset   = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-	fileSize  = 100 * 1024 * 1024 // 100MB in bytes
-	chunkSize = 1024 * 1024       // 1MB chunks for writing
+	chunkSize = 1024 * 1024 // 1MB chunks for writing
+	smallf    = "small.txt"
+	largef    = "large.txt"
 )
+
+var (
+	smallfile *bytes.Buffer
+	largefile *bytes.Buffer
+)
+
+func init() {
+	// create files for testing
+	// it is just easier to clean them up manually after tests
+	// are done vs. re-generating them each time
+	createTestFile(smallf, 1)
+	// load small file in to memory
+	buf, err := os.ReadFile(smallf)
+	if err != nil {
+		log.Fatal("error loading small.txt: %w", err)
+	}
+	smallfile = bytes.NewBuffer(buf)
+
+	createTestFile(largef, 50)
+	// load large file in to memory
+	buf, err = os.ReadFile(largef)
+	if err != nil {
+		log.Fatal("error loading large.txt: %w", err)
+	}
+	largefile = bytes.NewBuffer(buf)
+}
+
+func createTestFile(filename string, size int) {
+	filesize := size * 1024 * 1024
+
+	// Check if the file exists
+	if fileInfo, err := os.Stat(filename); err == nil {
+		// File exists, check its size
+		if fileInfo.Size() == int64(filesize) {
+			log.Printf("File %s already exists and is the correct size (%d bytes).", filename, filesize)
+			return
+		}
+		log.Printf("File %s exists but is the wrong size (%d bytes). Recreating.", filename, fileInfo.Size())
+	} else if !os.IsNotExist(err) {
+		log.Fatalf("Error checking file %s: %v", filename, err)
+	}
+
+	// Create the file
+	file, err := os.Create(filename)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer file.Close()
+
+	writer := bufio.NewWriter(file)
+	bytesWritten := 0
+
+	for bytesWritten < filesize {
+		chunk := generateRandomString(chunkSize)
+		n, err := writer.WriteString(chunk)
+		if err != nil {
+			log.Fatal(err)
+		}
+		bytesWritten += n
+	}
+
+	err = writer.Flush()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	log.Printf("File %s created successfully with size %d bytes.", filename, filesize)
+}
+
+func generateRandomString(length int) string {
+	result := make([]byte, length)
+	for i := range result {
+		result[i] = charset[rand.Intn(len(charset))]
+	}
+	return string(result)
+}
 
 func setupTestServer(t *testing.T) *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -75,14 +153,15 @@ func setupTestServer(t *testing.T) *httptest.Server {
 				t.Log("Using LZ4 reader")
 				reader = lz4.NewReader(r.Body)
 			default:
+				t.Log("Using io.Reader")
 				reader = r.Body
 			}
 
-			// Read the decompressed data into the buffer
+			// Read the data into the buffer - decompressing it if necessary
 			_, err = io.Copy(&buff, reader)
 			if err != nil {
-				t.Logf("decompression err: %s", err)
-				http.Error(w, "Failed to decompress data:"+err.Error(), http.StatusInternalServerError)
+				t.Logf("reader err: %s", err)
+				http.Error(w, "Failed to copy data to the buffer:"+err.Error(), http.StatusInternalServerError)
 				return
 			}
 
@@ -93,12 +172,12 @@ func setupTestServer(t *testing.T) *httptest.Server {
 				http.Error(w, "Failed to send decompressed data:"+err.Error(), http.StatusInternalServerError)
 				return
 			}
+		case "/upload/redirect":
+			t.Logf("redirecting to /upload")
+			http.Redirect(w, r, "/upload", http.StatusFound)
 		case "/download":
-			// Send a large response
-			w.Header().Set("Content-Length", "1048576") // 1MB
-			for i := 0; i < 1048576; i++ {
-				w.Write([]byte("a"))
-			}
+			w.Header().Set("Content-Length", strconv.FormatInt(int64(largefile.Len()), 10)) // size of the large file
+			w.Write(largefile.Bytes())
 		case "/echo-headers":
 			// Echo back the received headers
 			for name, values := range r.Header {
@@ -132,22 +211,23 @@ func TestBasicRequests(t *testing.T) {
 			resp, err := client.Custom(tt.method, server.URL+tt.path, nil)
 			assert.NoError(t, err)
 			assert.Equal(t, tt.expectedStatus, resp.StatusCode)
+			if err != nil {
+				t.Logf("err: %s", err)
+			}
 		})
 	}
 }
 
-func TestPostUpload(t *testing.T) {
+func TestPostFileUpload(t *testing.T) {
 	server := setupTestServer(t)
 	defer server.Close()
 
-	content := "Hello, World!"
-	tmpfile, err := os.CreateTemp("", "upload-*.txt")
-	assert.NoError(t, err)
-	defer os.Remove(tmpfile.Name())
-
-	_, err = tmpfile.WriteString(content)
-	assert.NoError(t, err)
-	tmpfile.Seek(0, 0)
+	tmpfile, err := os.Open(smallf)
+	if err != nil {
+		t.Logf("error opening %s: %s", smallf, err)
+		t.Fail()
+	}
+	defer tmpfile.Close()
 
 	var lastProgress float64
 	opt := options.New()
@@ -162,53 +242,63 @@ func TestPostUpload(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 	assert.Equal(t, float64(100), lastProgress)
-	assert.Equal(t, content, resp.Body.String())
+
+	assert.Equal(t, smallfile.Bytes(), resp.Body.Bytes())
 }
 
-func generateRandomString(length int) string {
-	result := make([]byte, length)
-	for i := range result {
-		result[i] = charset[rand.Intn(len(charset))]
+func TestPostStringUpload(t *testing.T) {
+	server := setupTestServer(t)
+	defer server.Close()
+
+	var lastProgress float64
+	opt := options.New()
+	opt.OnUploadProgress = func(bytesRead, totalBytes int64) {
+		if totalBytes > 0 {
+			lastProgress = float64(bytesRead) / float64(totalBytes) * 100
+		}
 	}
-	return string(result)
+
+	resp, err := client.Post(server.URL+"/upload", smallfile.String(), opt)
+	assert.NoError(t, err)
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, float64(100), lastProgress)
+
+	assert.Equal(t, smallfile.Bytes(), resp.Body.Bytes())
+}
+
+func TestPostByteUpload(t *testing.T) {
+	server := setupTestServer(t)
+	defer server.Close()
+
+	tmpfile, err := os.Open(smallf)
+	if err != nil {
+		t.Logf("error opening %s: %s", smallf, err)
+		t.Fail()
+	}
+
+	var lastProgress float64
+	opt := options.New()
+	opt.OnUploadProgress = func(bytesRead, totalBytes int64) {
+		if totalBytes > 0 {
+			lastProgress = float64(bytesRead) / float64(totalBytes) * 100
+		}
+	}
+
+	resp, err := client.Post(server.URL+"/upload", smallfile.Bytes(), opt)
+	assert.NoError(t, err)
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, float64(100), lastProgress)
+
+	tmpfile.Close()
+
+	assert.Equal(t, smallfile.Bytes(), resp.Body.Bytes())
 }
 
 func TestFileFuncUpload(t *testing.T) {
 	var err error
 	var resp response.Response
-
-	filename := "large-upload.txt"
-
-	file, err := os.Create(filename)
-	if err != nil {
-		fmt.Println("Error creating file:", err)
-		return
-	}
-
-	writer := bufio.NewWriter(file)
-	bytesWritten := 0
-
-	for bytesWritten < fileSize {
-		chunk := generateRandomString(chunkSize)
-		n, err := writer.WriteString(chunk)
-		if err != nil {
-			assert.NoError(t, err)
-			return
-		}
-		bytesWritten += n
-	}
-
-	err = writer.Flush()
-	if err != nil {
-		assert.NoError(t, err)
-	}
-
-	file.Close()
-
-	content, err := os.ReadFile(filename)
-	if err != nil {
-		assert.NoError(t, err)
-	}
 
 	server := setupTestServer(t)
 	defer server.Close()
@@ -223,37 +313,36 @@ func TestFileFuncUpload(t *testing.T) {
 		{"PatchFile Request", http.MethodPatch, http.StatusOK},
 	}
 
-	// Track upload progress
-	var lastProgress float64
-	opt := options.New()
-	opt.OnUploadProgress = func(bytesRead, totalBytes int64) {
-		if totalBytes > 0 {
-			lastProgress = float64(bytesRead) / float64(totalBytes) * 100
-		}
-	}
-
 	url := server.URL + "/upload"
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+
+			// Track upload progress
+			var lastProgress float64
+			opt := options.New()
+			opt.OnUploadProgress = func(bytesRead, totalBytes int64) {
+				if totalBytes > 0 {
+					lastProgress = float64(bytesRead) / float64(totalBytes) * 100
+				}
+			}
+
 			switch tt.method {
 			case http.MethodPost:
-				resp, err = client.PostFile(url, filename, opt)
+				resp, err = client.PostFile(url, largef, opt)
 			case http.MethodPut:
-				resp, err = client.PutFile(url, filename, opt)
+				resp, err = client.PutFile(url, largef, opt)
 			case http.MethodPatch:
-				resp, err = client.PatchFile(url, filename, opt)
+				resp, err = client.PatchFile(url, largef, opt)
 			}
 
 			assert.NoError(t, err)
 
 			assert.Equal(t, http.StatusOK, resp.StatusCode)
 			assert.Equal(t, float64(100), lastProgress)
-			assert.Equal(t, content, resp.Body.Bytes())
+			assert.Equal(t, largefile.Bytes(), resp.Body.Bytes())
 		})
 	}
-	// clean up resources
-	os.Remove(filename)
 }
 
 func TestFileDownload(t *testing.T) {
@@ -283,7 +372,7 @@ func TestFileDownload(t *testing.T) {
 
 	info, err := os.Stat(downloadPath)
 	assert.NoError(t, err)
-	assert.Equal(t, int64(1048576), info.Size())
+	assert.Equal(t, int64(largefile.Len()), info.Size())
 }
 
 func TestCustomHeaders(t *testing.T) {
@@ -308,8 +397,8 @@ func TestBufferSizes(t *testing.T) {
 		bufferSize   int
 		expectedSize int64
 	}{
-		{"Small Buffer", 1024, 1048576},
-		{"Large Buffer", 32768, 1048576},
+		{"Small Buffer", 1024, int64(largefile.Len())},
+		{"Large Buffer", 32768, int64(largefile.Len())},
 	}
 
 	for _, tt := range tests {
@@ -333,8 +422,6 @@ func TestCompression(t *testing.T) {
 	server := setupTestServer(t)
 	defer server.Close()
 
-	largeString := strings.Repeat("hello world ", 1000000)
-
 	tests := []struct {
 		name        string
 		compression options.CompressionType
@@ -351,13 +438,13 @@ func TestCompression(t *testing.T) {
 
 			opt.SetCompression(tt.compression)
 
-			t.Logf("[%s] Uncompressed size: %d bytes", tt.name, len(largeString))
+			t.Logf("[%s] Uncompressed size: %d bytes", tt.name, largefile.Len())
 
-			resp, err := client.Post(server.URL+"/upload", largeString, opt)
+			resp, err := client.Post(server.URL+"/upload", largefile.String(), opt)
 			assert.NoError(t, err)
 
 			assert.Equal(t, http.StatusOK, resp.StatusCode)
-			assert.Equal(t, largeString, resp.String())
+			assert.Equal(t, largefile.String(), resp.String())
 		})
 	}
 }
@@ -365,8 +452,6 @@ func TestCompression(t *testing.T) {
 func TestCustomCompression(t *testing.T) {
 	server := setupTestServer(t)
 	defer server.Close()
-
-	largeString := strings.Repeat("hello world ", 1000000)
 
 	tests := []struct {
 		name        string
@@ -396,13 +481,248 @@ func TestCustomCompression(t *testing.T) {
 			opt.CustomCompressionType = options.CompressionType(tt.encoding)
 			t.Logf("Custom compression type set to: %s", opt.CustomCompressionType)
 
-			t.Logf("[%s] Uncompressed size: %d bytes", tt.name, len(largeString))
+			t.Logf("[%s] Uncompressed size: %d bytes", tt.name, largefile.Len())
 
-			resp, err := client.Post(server.URL+"/upload", largeString, opt)
+			resp, err := client.Post(server.URL+"/upload", largefile.String(), opt)
 			assert.NoError(t, err)
 
 			assert.Equal(t, http.StatusOK, resp.StatusCode)
-			assert.Equal(t, largeString, resp.String())
+			assert.Equal(t, largefile.String(), resp.String())
+		})
+	}
+}
+
+func TestRedirectPostUploadNoFollow(t *testing.T) {
+	server := setupTestServer(t)
+	defer server.Close()
+
+	tmpfile, err := os.Open(smallf)
+	if err != nil {
+		t.Logf("error opening %s: %s", smallf, err)
+		t.Fail()
+	}
+
+	opt := options.New()
+	opt.FollowRedirects = false
+
+	resp, err := client.Post(server.URL+"/upload/redirect", tmpfile, opt)
+	assert.NoError(t, err)
+
+	assert.Equal(t, http.StatusFound, resp.StatusCode)
+	assert.NotEmpty(t, resp.Header.Get("Location"))
+}
+
+func TestRedirectPostUploadFollow(t *testing.T) {
+	server := setupTestServer(t)
+	defer server.Close()
+
+	tmpfile, _ := os.Open(largef)
+	defer tmpfile.Close()
+
+	opt := options.New()
+	opt.FollowRedirects = true
+	opt.PreserveMethodOnRedirect = true
+
+	opt.EnableLogging()
+
+	t.Logf("filesize: %d", largefile.Len())
+
+	var lastProgress float64
+	opt.OnUploadProgress = func(bytesRead, totalBytes int64) {
+		if totalBytes > 0 {
+			lastProgress = float64(bytesRead) / float64(totalBytes) * 100
+		}
+	}
+
+	resp, err := client.Post(server.URL+"/upload/redirect", tmpfile, opt)
+	assert.NoError(t, err)
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, float64(100), lastProgress)
+	assert.Equal(t, largefile.Bytes(), resp.Body.Bytes())
+
+	tmpfile.Close()
+}
+
+func TestRedirectPutUploadFollow(t *testing.T) {
+	server := setupTestServer(t)
+	defer server.Close()
+
+	tmpfile, _ := os.Open(largef)
+	defer tmpfile.Close()
+
+	opt := options.New()
+	opt.FollowRedirects = true
+	opt.PreserveMethodOnRedirect = true
+
+	opt.EnableLogging()
+
+	t.Logf("filesize: %d", largefile.Len())
+
+	var lastProgress float64
+	opt.OnUploadProgress = func(bytesRead, totalBytes int64) {
+		if totalBytes > 0 {
+			lastProgress = float64(bytesRead) / float64(totalBytes) * 100
+		}
+	}
+
+	resp, err := client.Put(server.URL+"/upload/redirect", tmpfile, opt)
+	assert.NoError(t, err)
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, float64(100), lastProgress)
+	assert.Equal(t, largefile.Bytes(), resp.Body.Bytes())
+}
+
+func TestRedirectPatchUploadFollow(t *testing.T) {
+	server := setupTestServer(t)
+	defer server.Close()
+
+	tmpfile, err := os.Open(largef)
+	if err != nil {
+		t.Logf("error opening %s: %s", largef, err)
+		t.Fail()
+	}
+	defer tmpfile.Close()
+
+	opt := options.New()
+	opt.FollowRedirects = true
+	opt.PreserveMethodOnRedirect = true
+
+	opt.EnableLogging()
+
+	t.Logf("filesize: %d", largefile.Len())
+
+	var lastProgress float64
+	opt.OnUploadProgress = func(bytesRead, totalBytes int64) {
+		if totalBytes > 0 {
+			lastProgress = float64(bytesRead) / float64(totalBytes) * 100
+		}
+	}
+
+	resp, err := client.Patch(server.URL+"/upload/redirect", tmpfile, opt)
+	assert.NoError(t, err)
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, float64(100), lastProgress)
+	assert.Equal(t, largefile.Bytes(), resp.Body.Bytes())
+}
+
+func TestRedirectFileFuncUpload(t *testing.T) {
+	var err error
+	var resp response.Response
+
+	server := setupTestServer(t)
+	defer server.Close()
+
+	tests := []struct {
+		name           string
+		method         string
+		expectedStatus int
+	}{
+		{"PostFile Request", http.MethodPost, http.StatusOK},
+		{"PutFile Request", http.MethodPut, http.StatusOK},
+		{"PatchFile Request", http.MethodPatch, http.StatusOK},
+	}
+
+	url := server.URL + "/upload/redirect"
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+
+			opt := options.New()
+			opt.Redirects(true, true)
+			opt.EnableLogging()
+
+			var lastProgress float64
+			opt.OnUploadProgress = func(bytesRead, totalBytes int64) {
+				if totalBytes > 0 {
+					lastProgress = float64(bytesRead) / float64(totalBytes) * 100
+				}
+			}
+			switch tt.method {
+			case http.MethodPost:
+				resp, err = client.PostFile(url, largef, opt)
+			case http.MethodPut:
+				resp, err = client.PutFile(url, largef, opt)
+			case http.MethodPatch:
+				resp, err = client.PatchFile(url, largef, opt)
+			}
+
+			assert.NoError(t, err)
+
+			assert.Equal(t, http.StatusOK, resp.StatusCode)
+			assert.Equal(t, largefile.Bytes(), resp.Body.Bytes())
+			// Verify upload progress completed
+			assert.Equal(t, float64(100), lastProgress)
+		})
+	}
+}
+
+func TestCompressedFileRedirect(t *testing.T) {
+	server := setupTestServer(t)
+	defer server.Close()
+
+	tests := []struct {
+		name         string
+		method       string
+		compression  options.CompressionType
+		expectedSize int64
+	}{
+		{"POST Gzip Compressed Redirect", http.MethodPost, options.CompressionGzip, int64(largefile.Len())},
+		{"POST Deflate Compressed Redirect", http.MethodPost, options.CompressionDeflate, int64(largefile.Len())},
+		{"POST Brotli Compressed Redirect", http.MethodPost, options.CompressionBrotli, int64(largefile.Len())},
+		{"PUT Gzip Compressed Redirect", http.MethodPut, options.CompressionGzip, int64(largefile.Len())},
+		{"PUT Deflate Compressed Redirect", http.MethodPut, options.CompressionDeflate, int64(largefile.Len())},
+		{"PUT Brotli Compressed Redirect", http.MethodPut, options.CompressionBrotli, int64(largefile.Len())},
+		{"PATCH Gzip Compressed Redirect", http.MethodPatch, options.CompressionGzip, int64(largefile.Len())},
+		{"PATCH Deflate Compressed Redirect", http.MethodPatch, options.CompressionDeflate, int64(largefile.Len())},
+		{"PATCH Brotli Compressed Redirect", http.MethodPatch, options.CompressionBrotli, int64(largefile.Len())},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var resp response.Response
+			var err error
+
+			opt := options.New()
+			opt.Redirects(true, true) // Enable redirects and preserve method
+			opt.SetCompression(tt.compression)
+
+			// Track upload progress
+			var lastProgress float64
+			opt.OnUploadProgress = func(bytesRead, totalBytes int64) {
+				if totalBytes > 0 {
+					lastProgress = float64(bytesRead) / float64(totalBytes) * 100
+				}
+			}
+
+			t.Logf("[%s] Original file size: %d bytes", tt.name, int64(smallfile.Len()))
+
+			url := server.URL + "/upload/redirect"
+
+			switch tt.method {
+			case http.MethodPost:
+				resp, err = client.PostFile(url, smallf, opt)
+			case http.MethodPut:
+				resp, err = client.PutFile(url, smallf, opt)
+			case http.MethodPatch:
+				resp, err = client.PatchFile(url, smallf, opt)
+			}
+
+			// Verify the request succeeded
+			assert.NoError(t, err)
+			assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+			// Verify the content was transmitted correctly
+			assert.Equal(t, smallfile.String(), resp.String())
+
+			// Verify upload progress completed
+			t.Logf("%s Last progress: %f", tt.name, lastProgress)
+			//assert.Equal(t, float64(100), lastProgress)
+
+			// Log the response size to see compression effectiveness
+			t.Logf("[%s] Response size: %d bytes", tt.name, len(resp.Body.Bytes()))
 		})
 	}
 }

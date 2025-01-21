@@ -150,7 +150,7 @@ func doRequest(client *http.Client, method string, url string, payload any, opts
 		opt.Log("Server wanted to redirect", "Location", req.Response.Header.Get("Location"), "status code", req.Response.StatusCode)
 
 		// Check if we need to follow redirects
-		if !opt.FollowRedirect {
+		if !opt.FollowRedirects {
 			return http.ErrUseLastResponse
 		}
 
@@ -272,13 +272,14 @@ func PostFormData(url string, payload map[string]string, opts ...*options.Option
 // Optionally, you can provide additional Options to customize the request.
 // Returns the HTTP response and an error if any.
 func PostFile(url string, filename string, opts ...*options.Option) (response.Response, error) {
-	file, opt, err := prepareFile(filename, opts...)
+	opt := options.New(opts...)
+	err := opt.PrepareFile(filename)
 	if err != nil {
 		return response.Response{}, err
 	}
-	defer file.Close()
+	defer opt.CloseFile()
 
-	return Post(url, file, opt)
+	return Post(url, opt.GetFile(), opt)
 }
 
 // Put performs an HTTP PUT to the specified URL with the given payload.
@@ -295,10 +296,7 @@ func Put(url string, payload any, opts ...*options.Option) (response.Response, e
 // Optionally, you can provide additional Options to customize the request.
 // Returns the HTTP response and an error if any.
 func PutFormData(url string, payload map[string]string, opts ...*options.Option) (response.Response, error) {
-	opt := &options.Option{}
-	if len(opts) > 0 {
-		opt.Merge(opts[0])
-	}
+	opt := options.New(opts...)
 	opt.AddHeader(ContentType, "application/x-www-form-urlencoded")
 
 	return Put(url, form.Encode(payload), opt)
@@ -310,12 +308,14 @@ func PutFormData(url string, payload map[string]string, opts ...*options.Option)
 // Optionally, you can provide additional Options to customize the request.
 // Returns the HTTP response and an error if any.
 func PutFile(url string, filename string, opts ...*options.Option) (response.Response, error) {
-	file, opt, err := prepareFile(filename, opts...)
+	opt := options.New(opts...)
+	err := opt.PrepareFile(filename)
 	if err != nil {
 		return response.Response{}, err
 	}
-	defer file.Close()
-	return Put(url, file, opt)
+	defer opt.CloseFile()
+
+	return Put(url, opt.GetFile(), opt)
 }
 
 // Patch performs an HTTP PATCH to the specified URL with the given payload.
@@ -332,7 +332,7 @@ func Patch(url string, payload any, opts ...*options.Option) (response.Response,
 // Optionally, you can provide additional Options to customize the request.
 // Returns the HTTP response and an error if any.
 func PatchFormData(url string, payload map[string]string, opts ...*options.Option) (response.Response, error) {
-	opt := &options.Option{}
+	opt := options.New(opts...)
 	if len(opts) > 0 {
 		opt.Merge(opts[0])
 	}
@@ -347,12 +347,14 @@ func PatchFormData(url string, payload map[string]string, opts ...*options.Optio
 // Optionally, you can provide additional Options to customize the request.
 // Returns the HTTP response and an error if any.
 func PatchFile(url string, filename string, opts ...*options.Option) (response.Response, error) {
-	file, opt, err := prepareFile(filename, opts...)
+	opt := options.New(opts...)
+	err := opt.PrepareFile(filename)
 	if err != nil {
 		return response.Response{}, err
 	}
-	defer file.Close()
-	return Patch(url, file, opt)
+	defer opt.CloseFile()
+
+	return Patch(url, opt.GetFile(), opt)
 }
 
 // Delete performs an HTTP DELETE to the specified URL.

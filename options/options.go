@@ -62,6 +62,9 @@ var (
 // If no options are provided when making a request, a default configuration is automatically generated.
 type Option struct {
 	initialised              bool                                           // Internal - determine if the struct was initialised with a call to New()
+	filename                 string                                         // keep track of the filename when using PrepareFile and following redirects
+	file                     *os.File                                       // If using a file (PrepareFile) store it here for better management
+	filesize                 int64                                          // Size of file when using PrepareFile()
 	Verbose                  bool                                           // Whether logging should be verbose or not
 	Logger                   slog.Logger                                    // Logging - default uses the slog TextHandler
 	Header                   http.Header                                    // Headers to be included in the request
@@ -71,8 +74,8 @@ type Option struct {
 	CustomCompressionType    CompressionType                                // When using a custom compression, specify the type to be used as the content-encoding header.
 	CustomCompressor         func(w *io.PipeWriter) (io.WriteCloser, error) // Function for custom compression
 	UserAgent                string                                         // User Agent to send with requests
-	FollowRedirect           bool                                           // Disable or enable redirects. Default is true i.e.: follow redirects
-	PreserveMethodOnRedirect bool                                           // Default is true
+	FollowRedirects          bool                                           // Disable or enable redirects. Default is false i.e.: follow redirects
+	PreserveMethodOnRedirect bool                                           // Default is false
 	UniqueIdentifierType     UniqueIdentifierType                           // Internal trace or identifier for the request
 	Transport                *http.Transport                                // Create our own default transport
 	ResponseWriter           ResponseWriter                                 // Define the type of response writer
@@ -80,6 +83,7 @@ type Option struct {
 	DownloadBufferSize       *int                                           // Control the size of the buffer when downloading a file
 	OnUploadProgress         func(bytesRead, totalBytes int64)              // To monitor and track progress when uploading
 	OnDownloadProgress       func(bytesRead, totalBytes int64)              // To monitor and track progress when downloading
+
 }
 
 // New creates a default Option with pre-configured settings. If additional options are provided
@@ -109,7 +113,7 @@ func defaultOption() *Option {
 		Header:                   http.Header{},
 		Compression:              CompressionNone,
 		UserAgent:                ua,
-		FollowRedirect:           false,
+		FollowRedirects:          false,
 		PreserveMethodOnRedirect: false,
 		UniqueIdentifierType:     IdentifierULID,
 		Transport:                defaultTransport(),
@@ -272,6 +276,60 @@ func (opt *Option) CreatePayloadReader(payload any) (io.Reader, int64, error) {
 	}
 }
 
+func (opt *Option) PrepareFile(filename string) error {
+	opt.filename = filename
+
+	fileinfo, err := os.Stat(opt.filename)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("file does not exist: %s", opt.filename)
+		}
+		return fmt.Errorf("failed to access file: %v", err)
+	}
+
+	opt.file, err = os.Open(opt.filename)
+	if err != nil {
+		return fmt.Errorf("failed to open file: %v", err)
+	}
+
+	opt.InferContentType(opt.file, fileinfo)
+	opt.filesize = fileinfo.Size()
+
+	// Add Content-Disposition header
+	contentDisposition := fmt.Sprintf(`form-data; name="file"; filename="%s"`, filepath.Base(opt.filename))
+	opt.AddHeader("Content-Disposition", contentDisposition)
+
+	return nil
+}
+
+// ReopenFile re-opens a previously closed file
+func (opt *Option) ReopenFile() (*os.File, error) {
+	var err error
+	opt.file, err = os.Open(opt.filename)
+	if err != nil {
+		return nil, err
+	}
+	return opt.file, err
+}
+
+func (opt *Option) GetFile() *os.File {
+	return opt.file
+}
+
+func (opt *Option) GetFileSize() int64 {
+	return opt.filesize
+}
+
+// CloseFile closes the file if it's open
+func (opt *Option) CloseFile() error {
+	if opt.file != nil {
+		err := opt.file.Close()
+		opt.file = nil
+		return err
+	}
+	return nil
+}
+
 // InferContentType determines the MIME type of a file based on its content and extension.
 // If it is unable to determine a MIME type, it defaults to application/octet-stream.
 func (opt *Option) InferContentType(file *os.File, fileInfo os.FileInfo) error {
@@ -333,14 +391,19 @@ func (opt *Option) GetCompressor(w *io.PipeWriter) (io.WriteCloser, error) {
 	}
 }
 
+func (opt *Option) Redirects(enabled bool, preserve bool) {
+	opt.FollowRedirects = enabled
+	opt.PreserveMethodOnRedirect = preserve
+}
+
 // EnableRedirects configures the Option to follow HTTP redirects.
 func (opt *Option) EnableRedirects() {
-	opt.FollowRedirect = true
+	opt.FollowRedirects = true
 }
 
 // DisableRedirects configures the Option to not follow HTTP redirects.
 func (opt *Option) DisableRedirects() {
-	opt.FollowRedirect = false
+	opt.FollowRedirects = false
 }
 
 // EnablePreserveMethodOnRedirect configures redirects to maintain the original HTTP method.
@@ -476,7 +539,7 @@ func (opt *Option) Merge(src *Option) {
 
 	// Merge boolean and primitive fields with source priority
 	opt.Verbose = src.Verbose
-	opt.FollowRedirect = src.FollowRedirect
+	opt.FollowRedirects = src.FollowRedirects
 	opt.PreserveMethodOnRedirect = src.PreserveMethodOnRedirect
 
 	if src.Transport != nil {
