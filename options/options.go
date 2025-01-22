@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/andybalholm/brotli"
@@ -77,6 +78,9 @@ type Option struct {
 	UserAgent                string                                         // User Agent to send with requests
 	FollowRedirects          bool                                           // Disable or enable redirects. Default is false i.e.: follow redirects
 	PreserveMethodOnRedirect bool                                           // Default is false
+	MaxRedirects             int                                            // Maximum number of redirects that can happen before the client gives up
+	currRedirect             int                                            // count of current redirects that have been performed
+	mu                       sync.Mutex                                     // mutex for currRedirect
 	UniqueIdentifierType     UniqueIdentifierType                           // Internal trace or identifier for the request
 	Transport                *http.Transport                                // Create our own default transport
 	ResponseWriter           ResponseWriter                                 // Define the type of response writer
@@ -84,7 +88,6 @@ type Option struct {
 	DownloadBufferSize       *int                                           // Control the size of the buffer when downloading a file
 	OnUploadProgress         func(bytesRead, totalBytes int64)              // To monitor and track progress when uploading
 	OnDownloadProgress       func(bytesRead, totalBytes int64)              // To monitor and track progress when downloading
-
 }
 
 // New creates a default Option with pre-configured settings. If additional options are provided
@@ -117,6 +120,7 @@ func defaultOption() *Option {
 		UserAgent:                ua,
 		FollowRedirects:          false,
 		PreserveMethodOnRedirect: false,
+		MaxRedirects:             10,
 		UniqueIdentifierType:     IdentifierULID,
 		Transport:                defaultTransport(),
 		ResponseWriter: ResponseWriter{
@@ -467,6 +471,22 @@ func (opt *Option) DisablePreserveMethodOnRedirect() {
 	opt.PreserveMethodOnRedirect = false
 }
 
+func (opt *Option) SetMaxRedirects(size int) {
+	opt.MaxRedirects = size
+}
+
+func (opt *Option) GetMaxRedirects() int {
+	return opt.MaxRedirects
+}
+
+func (opt *Option) CheckRedirects() bool {
+	opt.mu.Lock()
+	defer opt.mu.Unlock()
+	opt.currRedirect++
+	opt.Log("CurrentRedirects", "currRedirect", opt.currRedirect, "MaxRedirect", opt.MaxRedirects)
+	return opt.currRedirect == opt.MaxRedirects
+}
+
 // SetTransport configures a custom HTTP transport for the requests.
 // This allows fine-grained control over connection pooling, timeouts, and other transport-level settings.
 func (opt *Option) SetTransport(transport *http.Transport) {
@@ -595,6 +615,7 @@ func (opt *Option) Merge(src *Option) {
 	opt.Verbose = src.Verbose
 	opt.FollowRedirects = src.FollowRedirects
 	opt.PreserveMethodOnRedirect = src.PreserveMethodOnRedirect
+	opt.MaxRedirects = src.MaxRedirects
 
 	if src.Logger != (slog.Logger{}) {
 		opt.Logger = src.Logger

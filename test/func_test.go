@@ -185,6 +185,10 @@ func setupTestServer(t *testing.T) *httptest.Server {
 		case "/method-check":
 			w.Write([]byte(r.Method))
 
+		case "/max-redirects":
+			t.Logf("redirecting to /max-redirects")
+			http.Redirect(w, r, "/max-redirects", http.StatusFound)
+
 		case "/upload/multipart":
 			err := r.ParseMultipartForm(200 << 20) // 200 MB max memory
 			if err != nil {
@@ -462,7 +466,7 @@ func TestBufferSizes(t *testing.T) {
 			duration := time.Since(start)
 
 			assert.NoError(t, err)
-			assert.Equal(t, tt.expectedSize, resp.Length())
+			assert.Equal(t, tt.expectedSize, resp.Len())
 
 			t.Logf("Download with %d buffer took %v", tt.bufferSize, duration)
 		})
@@ -582,6 +586,27 @@ func TestRedirectPostUploadNoPreserve(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 	assert.Equal(t, "GET", resp.String())
+}
+
+func TestRedirectMaxRedirects(t *testing.T) {
+	server := setupTestServer(t)
+	defer server.Close()
+
+	tmpfile, err := os.Open(smallf)
+	if err != nil {
+		t.Logf("error opening %s: %s", smallf, err)
+		t.Fail()
+	}
+
+	opt := options.New()
+	opt.EnableLogging()
+	opt.FollowRedirects = true
+	opt.PreserveMethodOnRedirect = false
+	opt.MaxRedirects = 5
+
+	resp, err := client.Post(server.URL+"/max-redirects", tmpfile, opt)
+	assert.Equal(t, fmt.Sprintf("Get \"/max-redirects\": max redirects (%d) exceeded", opt.MaxRedirects), err.Error())
+	assert.Equal(t, "", resp.String())
 }
 
 func TestRedirectPostUploadFollow(t *testing.T) {

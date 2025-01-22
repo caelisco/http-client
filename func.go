@@ -58,8 +58,11 @@ func doRequest(method string, url string, payload any, opts ...*options.Option) 
 		client.Transport = opt.Transport
 	}
 
-	// Always disable automatic redirects - we'll handle them manually
+	// Always disable automatic redirects, we'll handle them manually
 	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if opt.CheckRedirects() {
+			return fmt.Errorf("max redirects (%d) exceeded", opt.MaxRedirects)
+		}
 		return http.ErrUseLastResponse
 	}
 
