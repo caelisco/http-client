@@ -76,21 +76,24 @@ func doRequest(method string, url string, payload any, opts ...*options.Option) 
 	var payloadReader io.Reader
 	var contentLength int64
 
-	// Check if payload is an os.File and store filename if necessary
-	if file, ok := payload.(*os.File); ok {
-		opt.SetFile(file)
-	}
+	// Only allow the use of the payload with the appropriate methods: POST, PUT, PATCH
+	if method == http.MethodPost || method == http.MethodPut || method == http.MethodPatch {
+		// Check if payload is an os.File and store filename if necessary
+		if file, ok := payload.(*os.File); ok {
+			opt.SetFile(file)
+		}
 
-	if opt.HasFileHandle() {
-		payload = opt.GetFile()
-	}
+		if opt.HasFileHandle() {
+			payload = opt.GetFile()
+		}
 
-	// if the payload that is passed through is not nil, determine the type of reader that is required
-	// to be able to send the payload to the server.
-	if payload != nil {
-		payloadReader, contentLength, err = opt.CreatePayloadReader(payload)
-		if err != nil {
-			return resp, fmt.Errorf("unable to create payload reader: %w", err)
+		// if the payload that is passed through is not nil, determine the type of reader that is required
+		// to be able to send the payload to the server.
+		if payload != nil {
+			payloadReader, contentLength, err = opt.CreatePayloadReader(payload)
+			if err != nil {
+				return resp, fmt.Errorf("unable to create payload reader: %w", err)
+			}
 		}
 	}
 

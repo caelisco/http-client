@@ -178,6 +178,13 @@ func setupTestServer(t *testing.T) *httptest.Server {
 			t.Logf("redirecting to /upload")
 			http.Redirect(w, r, "/upload", http.StatusFound)
 
+		case "/upload/no-preserve":
+			t.Logf("redirecting to /method-check")
+			http.Redirect(w, r, "/method-check", http.StatusFound)
+
+		case "/method-check":
+			w.Write([]byte(r.Method))
+
 		case "/upload/multipart":
 			err := r.ParseMultipartForm(200 << 20) // 200 MB max memory
 			if err != nil {
@@ -554,6 +561,27 @@ func TestRedirectPostUploadNoFollow(t *testing.T) {
 
 	assert.Equal(t, http.StatusFound, resp.StatusCode)
 	assert.NotEmpty(t, resp.Header.Get("Location"))
+}
+
+func TestRedirectPostUploadNoPreserve(t *testing.T) {
+	server := setupTestServer(t)
+	defer server.Close()
+
+	tmpfile, err := os.Open(smallf)
+	if err != nil {
+		t.Logf("error opening %s: %s", smallf, err)
+		t.Fail()
+	}
+
+	opt := options.New()
+	opt.FollowRedirects = true
+	opt.PreserveMethodOnRedirect = false
+
+	resp, err := client.Post(server.URL+"/upload/no-preserve", tmpfile, opt)
+	assert.NoError(t, err)
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, "GET", resp.String())
 }
 
 func TestRedirectPostUploadFollow(t *testing.T) {
