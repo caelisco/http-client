@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"compress/zlib"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -172,17 +173,60 @@ func setupTestServer(t *testing.T) *httptest.Server {
 				http.Error(w, "Failed to send decompressed data:"+err.Error(), http.StatusInternalServerError)
 				return
 			}
+
 		case "/upload/redirect":
 			t.Logf("redirecting to /upload")
 			http.Redirect(w, r, "/upload", http.StatusFound)
+
+		case "/upload/multipart":
+			err := r.ParseMultipartForm(200 << 20) // 200 MB max memory
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+
+			fileInfo := make(map[string]int64)
+
+			for _, files := range r.MultipartForm.File {
+				for _, fileHeader := range files {
+					file, err := fileHeader.Open()
+					if err != nil {
+						http.Error(w, err.Error(), http.StatusInternalServerError)
+						return
+					}
+					defer file.Close()
+
+					// Get file size
+					size, err := file.Seek(0, io.SeekEnd)
+					if err != nil {
+						http.Error(w, err.Error(), http.StatusInternalServerError)
+						return
+					}
+					file.Seek(0, io.SeekStart) // Reset file pointer
+
+					fileInfo[fileHeader.Filename] = size
+				}
+			}
+
+			// Set content type to JSON
+			w.Header().Set("Content-Type", "application/json")
+
+			// Encode and write the JSON response
+			if err := json.NewEncoder(w).Encode(fileInfo); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+
 		case "/download":
 			w.Header().Set("Content-Length", strconv.FormatInt(int64(largefile.Len()), 10)) // size of the large file
 			w.Write(largefile.Bytes())
+
 		case "/echo-headers":
 			// Echo back the received headers
 			for name, values := range r.Header {
 				w.Header().Set("Echo-"+name, strings.Join(values, ", "))
 			}
+
 		default:
 			w.WriteHeader(http.StatusOK)
 			fmt.Fprintf(w, "Hello from path: %s", r.URL.Path)
@@ -723,6 +767,73 @@ func TestCompressedFileRedirect(t *testing.T) {
 
 			// Log the response size to see compression effectiveness
 			t.Logf("[%s] Response size: %d bytes", tt.name, len(resp.Body.Bytes()))
+		})
+	}
+}
+
+func TestMultipartUpload(t *testing.T) {
+	server := setupTestServer(t)
+	defer server.Close()
+
+	tests := []struct {
+		name           string
+		method         string
+		expectedStatus int
+	}{
+		{"PostMultipartUpload", http.MethodPost, http.StatusOK},
+		{"PutMultipartUpload", http.MethodPut, http.StatusOK},
+		{"PatchMultipartUpload", http.MethodPatch, http.StatusOK},
+	}
+
+	url := server.URL + "/upload/multipart"
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var lastProgress float64
+			opt := options.New()
+			opt.OnUploadProgress = func(bytesRead, totalBytes int64) {
+				if totalBytes > 0 {
+					lastProgress = float64(bytesRead) / float64(totalBytes) * 100
+				}
+			}
+
+			s, err := os.Open(smallf)
+			if err != nil {
+				t.Logf("unable to open %s: %s", smallf, err)
+			}
+			l, err := os.Open(largef)
+			if err != nil {
+				t.Logf("unable to open %s: %s", largef, err)
+			}
+
+			payload := map[string]interface{}{
+				"smallfile": s,
+				"largefile": l,
+			}
+
+			var resp response.Response
+
+			switch tt.method {
+			case http.MethodPost:
+				resp, err = client.PostMultipartUpload(url, payload, opt)
+			case http.MethodPut:
+				resp, err = client.PutMultipartUpload(url, payload, opt)
+			case http.MethodPatch:
+				resp, err = client.PatchMultipartUpload(url, payload, opt)
+			}
+
+			assert.NoError(t, err)
+			assert.Equal(t, tt.expectedStatus, resp.StatusCode)
+			assert.Equal(t, float64(100), lastProgress)
+
+			// Parse the JSON response
+			var fileInfo map[string]int64
+			err = json.Unmarshal(resp.Body.Bytes(), &fileInfo)
+			assert.NoError(t, err)
+
+			// Check file sizes
+			assert.Equal(t, int64(smallfile.Len()), fileInfo["small.txt"])
+			assert.Equal(t, int64(largefile.Len()), fileInfo["large.txt"])
 		})
 	}
 }

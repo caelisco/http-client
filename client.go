@@ -98,9 +98,9 @@ func (c *Client) doRequest(method string, url string, payload any, opts ...*opti
 	// Clone global options so that we do not overwrite them with each subsequent request
 	opt := options.New(opts...)
 	opt.Merge(c.CloneGlobalOptions())
-
+	opt.SetClient(c.client)
 	// Perform the request with the merged options
-	response, err := doRequest(c.client, method, url, payload, opt)
+	response, err := doRequest(method, url, payload, opt)
 
 	// Keep the response
 	c.responses = append(c.responses, response)

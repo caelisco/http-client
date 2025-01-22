@@ -62,9 +62,10 @@ var (
 // If no options are provided when making a request, a default configuration is automatically generated.
 type Option struct {
 	initialised              bool                                           // Internal - determine if the struct was initialised with a call to New()
+	client                   *http.Client                                   // Default or custom *http.Client
 	filename                 string                                         // keep track of the filename when using PrepareFile and following redirects
 	file                     *os.File                                       // If using a file (PrepareFile) store it here for better management
-	filesize                 int64                                          // Size of file when using PrepareFile()
+	filesize                 int64                                          //size of file if being used
 	Verbose                  bool                                           // Whether logging should be verbose or not
 	Logger                   slog.Logger                                    // Logging - default uses the slog TextHandler
 	Header                   http.Header                                    // Headers to be included in the request
@@ -108,6 +109,7 @@ func New(opts ...*Option) *Option {
 func defaultOption() *Option {
 	return &Option{
 		initialised:              true,
+		client:                   &http.Client{},
 		Verbose:                  false,
 		Logger:                   *slog.New(slog.NewTextHandler(os.Stdout, nil)),
 		Header:                   http.Header{},
@@ -260,6 +262,8 @@ func (opt *Option) CreatePayloadReader(payload any) (io.Reader, int64, error) {
 		// io.Reader payload, determine size if possible using io.Seeker
 		size := int64(-1)
 		if seeker, ok := v.(io.Seeker); ok {
+			// Ensure the file pointer is at the start before seeking the size
+			seeker.Seek(0, io.SeekStart)
 			currentPos, _ := seeker.Seek(0, io.SeekCurrent)
 			size, _ = seeker.Seek(0, io.SeekEnd)
 			seeker.Seek(currentPos, io.SeekStart)
@@ -276,6 +280,11 @@ func (opt *Option) CreatePayloadReader(payload any) (io.Reader, int64, error) {
 	}
 }
 
+// PrepareFile sets up a file for upload by opening it, checking its existence,
+// setting metadata like size and content type, and configuring appropriate headers.
+// It takes a filename string as input and returns an error if the file cannot be
+// accessed, doesn't exist, or fails to open. The method also automatically sets
+// Content-Disposition headers appropriate for file uploads.
 func (opt *Option) PrepareFile(filename string) error {
 	opt.filename = filename
 
@@ -287,13 +296,14 @@ func (opt *Option) PrepareFile(filename string) error {
 		return fmt.Errorf("failed to access file: %v", err)
 	}
 
+	opt.filesize = fileinfo.Size()
+
 	opt.file, err = os.Open(opt.filename)
 	if err != nil {
 		return fmt.Errorf("failed to open file: %v", err)
 	}
 
 	opt.InferContentType(opt.file, fileinfo)
-	opt.filesize = fileinfo.Size()
 
 	// Add Content-Disposition header
 	contentDisposition := fmt.Sprintf(`form-data; name="file"; filename="%s"`, filepath.Base(opt.filename))
@@ -302,8 +312,52 @@ func (opt *Option) PrepareFile(filename string) error {
 	return nil
 }
 
-// ReopenFile re-opens a previously closed file
+// SetFile configures an already-opened file for use with the client.
+// It takes an *os.File pointer and sets internal metadata like filename
+// and filesize. Unlike PrepareFile, this method assumes the file is
+// already opened and valid. If file stats cannot be read, the method
+// will silently fail rather than return an error.
+func (opt *Option) SetFile(file *os.File) {
+	opt.file = file
+	opt.filename = file.Name()
+	// Get the file's FileInfo and retrieve the size
+	fileInfo, err := file.Stat()
+	if err != nil {
+		// Handle error if needed, for example logging it
+		return
+	}
+
+	// Set the file size (in bytes)
+	opt.filesize = fileInfo.Size()
+}
+
+// HasFileHandle returns true if there is currently a file configured for use
+// with this Option instance. This can be used to check if file operations
+// should be performed during request processing.
+func (opt *Option) HasFileHandle() bool {
+	return opt.file != nil
+}
+
+// GetFile returns the currently configured *os.File, if any.
+// Returns nil if no file has been set. The returned file may be
+// either opened or closed depending on the stage of request processing.
+func (opt *Option) GetFile() *os.File {
+	return opt.file
+}
+
+// Filesize returns the size in bytes of the currently configured file.
+// Returns 0 if no file is set or if the file size could not be determined.
+// This value is set when the file is initially prepared or set.
+func (opt *Option) Filesize() int64 {
+	return opt.filesize
+}
+
+// ReopenFile attempts to reopen a previously closed file using the stored filename.
+// This is particularly useful during redirect handling when a file needs to be
+// re-read. Returns the reopened file and any error encountered. Logs the reopening
+// attempt through the configured logger.
 func (opt *Option) ReopenFile() (*os.File, error) {
+	opt.Log("Reopening file", "filename", opt.filename, "filesize", opt.filesize)
 	var err error
 	opt.file, err = os.Open(opt.filename)
 	if err != nil {
@@ -312,19 +366,16 @@ func (opt *Option) ReopenFile() (*os.File, error) {
 	return opt.file, err
 }
 
-func (opt *Option) GetFile() *os.File {
-	return opt.file
-}
-
-func (opt *Option) GetFileSize() int64 {
-	return opt.filesize
-}
-
-// CloseFile closes the file if it's open
+// CloseFile closes the currently open file if one exists and resets related
+// metadata. It logs the closure through the configured logger and returns any
+// error encountered during closing. After closing, the file pointer is set to
+// nil and the filesize is reset to 0.
 func (opt *Option) CloseFile() error {
+	opt.Log("Closing file", "filename", opt.filename)
 	if opt.file != nil {
 		err := opt.file.Close()
 		opt.file = nil
+		opt.filesize = 0
 		return err
 	}
 	return nil
@@ -513,6 +564,9 @@ func (opt *Option) SetBufferOutput() {
 // Settings from the source Option take precedence over existing settings.
 // This includes headers, cookies, compression settings, and all other configuration options.
 func (opt *Option) Merge(src *Option) {
+	if src == nil {
+		return
+	}
 	// Merge Headers
 	if opt.Header == nil {
 		opt.Header = make(http.Header)
@@ -541,6 +595,10 @@ func (opt *Option) Merge(src *Option) {
 	opt.Verbose = src.Verbose
 	opt.FollowRedirects = src.FollowRedirects
 	opt.PreserveMethodOnRedirect = src.PreserveMethodOnRedirect
+
+	if src.Logger != (slog.Logger{}) {
+		opt.Logger = src.Logger
+	}
 
 	if src.Transport != nil {
 		opt.Transport = src.Transport
@@ -587,4 +645,23 @@ func (opt *Option) Merge(src *Option) {
 	if src.OnDownloadProgress != nil {
 		opt.OnDownloadProgress = src.OnDownloadProgress
 	}
+}
+
+// GetClient returns the HTTP client to be used for requests.
+// If a custom client has been set via SetClient, that client is returned.
+// Otherwise, returns a new default http.Client instance.
+func (o *Option) GetClient() *http.Client {
+	if o.client != nil {
+		return o.client
+	}
+	return &http.Client{}
+}
+
+// SetClient configures a custom HTTP client to be used for requests.
+// This client will be used instead of the default client for all subsequent
+// requests made with this Option instance. The provided client should be
+// configured with any desired settings (timeouts, transport, etc) before
+// being set.
+func (opt *Option) SetClient(client *http.Client) {
+	opt.client = client
 }

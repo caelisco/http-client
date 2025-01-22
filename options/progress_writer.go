@@ -10,11 +10,12 @@ import (
 // It reports progress using the onProgress callback, which is invoked with
 // the number of bytes written so far and the total bytes expected to be written.
 type progressWriter struct {
-	writer     io.WriteCloser             // Underlying writer to write data to
-	total      int64                      // Total size of the data (in bytes) to be written
-	written    atomic.Int64               // Tracks the number of bytes written so far
-	onProgress func(written, total int64) // Callback function for reporting progress
-	mu         sync.RWMutex
+	writer     io.WriteCloser
+	total      int64
+	written    atomic.Int64
+	onProgress func(written, total int64)
+	mu         sync.Mutex
+	callbackMu sync.Mutex // Separate mutex for callback synchronization
 }
 
 // ProgressWriter creates a new progressWriter to monitor writing progress.
@@ -32,12 +33,16 @@ func ProgressWriter(writer io.WriteCloser, total int64, onProgress func(written,
 // It invokes the onProgress callback with the updated progress after each write operation.
 func (pw *progressWriter) Write(p []byte) (int, error) {
 	pw.mu.Lock()
-	n, err := pw.writer.Write(p) // Write data to the underlying writer
+	n, err := pw.writer.Write(p)
 	pw.mu.Unlock()
+
 	if n > 0 {
-		newWritten := pw.written.Add(int64(n)) // Update the total bytes written
+		newWritten := pw.written.Add(int64(n))
 		if pw.onProgress != nil {
-			pw.onProgress(newWritten, pw.total) // Report progress
+			// Synchronize callback execution
+			pw.callbackMu.Lock()
+			pw.onProgress(newWritten, pw.total)
+			pw.callbackMu.Unlock()
 		}
 	}
 	return n, err
@@ -48,6 +53,7 @@ func (pw *progressWriter) Write(p []byte) (int, error) {
 func (pw *progressWriter) Close() error {
 	pw.mu.Lock()
 	defer pw.mu.Unlock()
+
 	if closer, ok := pw.writer.(io.Closer); ok {
 		return closer.Close()
 	}

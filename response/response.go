@@ -49,17 +49,11 @@ func New(url string, method string, payload any, opt *options.Option) Response {
 
 // Bytes returns the response body as a byte slice
 func (r *Response) Bytes() []byte {
-	if r.Body.IsEmpty() {
-		return nil
-	}
 	return r.Body.Bytes()
 }
 
 // String returns the response body as a string
 func (r *Response) String() string {
-	if r.Body.IsEmpty() {
-		return ""
-	}
 	return r.Body.String()
 }
 
