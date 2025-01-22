@@ -23,7 +23,7 @@ In most cases, the HTTP method function calls are probably what you are looking 
 
 The reusable client is typically more useful in scenarios where you need to work with cookies, or in scenarios where it will be useful to keep track of past requests. An example could be for writing an API test that might require different headers/cookies to be set and used as part of the testing of each end point.
 
-The readme contains documentation for v1.0.0
+The readme contains documentation for v2.0.0
 
 # Test cases
 
