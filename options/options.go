@@ -111,8 +111,10 @@ func New(opts ...*Option) *Option {
 // defaultOption initializes and returns a default Option with pre-configured settings.
 func defaultOption() *Option {
 	return &Option{
-		initialised:              true,
-		client:                   &http.Client{},
+		initialised: true,
+		client: &http.Client{
+			Timeout: 30 * time.Second,
+		},
 		Verbose:                  false,
 		Logger:                   *slog.New(slog.NewTextHandler(os.Stdout, nil)),
 		Header:                   http.Header{},
@@ -145,13 +147,13 @@ func defaultTransport() *http.Transport {
 		}).DialContext,
 
 		// Connection pooling settings for moderate traffic
-		MaxIdleConns:        20, // Total idle connections in the pool
-		MaxIdleConnsPerHost: 5,  // Idle connections per host (internal services typically use few hosts)
+		MaxIdleConns:        50, // Total idle connections in the pool
+		MaxIdleConnsPerHost: 10, // Idle connections per host (internal services typically use few hosts)
 		MaxConnsPerHost:     10, // Limit concurrent connections per host
 
 		// Timeout settings optimized for internal network conditions
-		IdleConnTimeout:       90 * time.Second, // How long to keep idle connections
-		ResponseHeaderTimeout: 10 * time.Second, // Max time to wait for response headers
+		IdleConnTimeout:       60 * time.Second, // How long to keep idle connections
+		ResponseHeaderTimeout: 30 * time.Second, // Max time to wait for response headers
 		TLSHandshakeTimeout:   5 * time.Second,  // Max time for TLS handshake
 		ExpectContinueTimeout: 1 * time.Second,  // Timeout for 100-continue responses
 
