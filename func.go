@@ -577,7 +577,7 @@ func Head(url string, opts ...*options.Option) (response.Response, error) {
 // Optionally, you can provide additional Options to customize the request.
 // Returns the HTTP response and an error if any.
 func Options(url string, opts ...*options.Option) (response.Response, error) {
-	return doRequest(http.MethodHead, url, nil, opts...)
+	return doRequest(http.MethodOptions, url, nil, opts...)
 }
 
 // Trace performs an HTTP TRACE to the specified URL.

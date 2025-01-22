@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -32,8 +33,9 @@ import (
 const (
 	charset   = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 	chunkSize = 1024 * 1024 // 1MB chunks for writing
-	smallf    = "small.txt"
-	largef    = "large.txt"
+	smallf    = "test-small.txt"
+	largef    = "test-large.txt"
+	downloadf = "test-download.txt"
 )
 
 var (
@@ -408,7 +410,7 @@ func TestFileDownload(t *testing.T) {
 	assert.NoError(t, err)
 	defer os.RemoveAll(tmpDir)
 
-	downloadPath := filepath.Join(tmpDir, "downloaded.txt")
+	downloadPath := filepath.Join(tmpDir, downloadf)
 
 	var lastProgress float64
 	opt := options.New()
@@ -436,7 +438,7 @@ func TestFileDownloadDirectToFile(t *testing.T) {
 
 	var lastProgress float64
 	opt := options.New()
-	opt.SetFileOutput("download.txt")
+	opt.SetFileOutput(downloadf)
 
 	opt.OnDownloadProgress = func(bytesRead, totalBytes int64) {
 		if totalBytes > 0 {
@@ -450,7 +452,7 @@ func TestFileDownloadDirectToFile(t *testing.T) {
 
 	assert.Equal(t, float64(100), lastProgress)
 
-	info, err := os.Stat("download.txt")
+	info, err := os.Stat(downloadf)
 	assert.NoError(t, err)
 	assert.Equal(t, int64(largefile.Len()), info.Size())
 }
@@ -885,8 +887,8 @@ func TestMultipartUpload(t *testing.T) {
 			}
 
 			payload := map[string]interface{}{
-				"smallfile": s,
-				"largefile": l,
+				smallf: s,
+				largef: l,
 			}
 
 			var resp response.Response
@@ -910,8 +912,195 @@ func TestMultipartUpload(t *testing.T) {
 			assert.NoError(t, err)
 
 			// Check file sizes
-			assert.Equal(t, int64(smallfile.Len()), fileInfo["small.txt"])
-			assert.Equal(t, int64(largefile.Len()), fileInfo["large.txt"])
+			assert.Equal(t, int64(smallfile.Len()), fileInfo[smallf])
+			assert.Equal(t, int64(largefile.Len()), fileInfo[largef])
 		})
 	}
+}
+
+func TestConcurrentRequests(t *testing.T) {
+	server := setupTestServer(t)
+	defer server.Close()
+
+	tests := []struct {
+		name          string
+		numGoroutines int
+		requestsPerGo int
+		scenario      string // "mixed", "upload", "download"
+	}{
+		{"Light Concurrent Mixed Load", 10, 5, "mixed"},
+		{"Heavy Concurrent Mixed Load", 50, 10, "mixed"},
+		{"Concurrent File Uploads", 20, 5, "upload"},
+		{"Concurrent File Downloads", 20, 5, "download"},
+		{"Mixed With Shared Client", 30, 10, "mixed_shared_client"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var wg sync.WaitGroup
+			errors := make(chan error, tt.numGoroutines*tt.requestsPerGo)
+			start := time.Now()
+
+			// Create shared client for specific test
+			sharedClient := client.New()
+
+			for i := 0; i < tt.numGoroutines; i++ {
+				wg.Add(1)
+				go func(routineNum int) {
+					defer wg.Done()
+					for j := 0; j < tt.requestsPerGo; j++ {
+						var err error
+						// Remove the unused response.Response declaration
+						switch tt.scenario {
+						case "mixed_shared_client":
+							err = performMixedRequestsSharedClient(sharedClient, server.URL, routineNum, j)
+						case "mixed":
+							err = performMixedRequests(server.URL, routineNum, j)
+						case "upload":
+							err = performUploadRequest(server.URL, routineNum, j)
+						case "download":
+							err = performDownloadRequest(server.URL, routineNum, j)
+						}
+						if err != nil {
+							errors <- fmt.Errorf("routine %d request %d: %w", routineNum, j, err)
+						}
+					}
+				}(i)
+			}
+
+			wg.Wait()
+			close(errors)
+
+			// Collect and report errors
+			var errs []error
+			for err := range errors {
+				errs = append(errs, err)
+			}
+
+			duration := time.Since(start)
+			totalRequests := tt.numGoroutines * tt.requestsPerGo
+			successRate := float64(totalRequests-len(errs)) / float64(totalRequests) * 100
+
+			t.Logf("Test: %s", tt.name)
+			t.Logf("Total requests: %d", totalRequests)
+			t.Logf("Duration: %v", duration)
+			t.Logf("Requests/second: %.2f", float64(totalRequests)/duration.Seconds())
+			t.Logf("Success rate: %.2f%%", successRate)
+
+			if len(errs) > 0 {
+				t.Logf("Errors encountered: %d", len(errs))
+				for _, err := range errs {
+					t.Logf("Error: %v", err)
+				}
+			}
+
+			// Assert high success rate
+			assert.GreaterOrEqual(t, successRate, 95.0, "Success rate should be at least 95%")
+		})
+	}
+}
+
+func performMixedRequestsSharedClient(c *client.Client, baseURL string, routineNum, reqNum int) error {
+	switch reqNum % 3 {
+	case 0:
+		resp, err := c.Get(baseURL + "/echo-headers")
+		if err != nil {
+			return err
+		}
+		if resp.StatusCode != http.StatusOK {
+			return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+		}
+	case 1:
+		opt := options.New()
+		opt.AddHeader(fmt.Sprintf("X-Test-%d-%d", routineNum, reqNum), "test")
+		resp, err := c.Post(baseURL+"/upload", []byte("test data"), opt)
+		if err != nil {
+			return err
+		}
+		if resp.StatusCode != http.StatusOK {
+			return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+		}
+	case 2:
+		opt := options.New()
+		opt.SetBufferOutput()
+		resp, err := c.Get(baseURL + "/download")
+		if err != nil {
+			return err
+		}
+		if resp.StatusCode != http.StatusOK {
+			return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+		}
+	}
+	return nil
+}
+
+func performMixedRequests(baseURL string, routineNum, reqNum int) error {
+	switch reqNum % 3 {
+	case 0:
+		resp, err := client.Get(baseURL + "/echo-headers")
+		if err != nil {
+			return err
+		}
+		if resp.StatusCode != http.StatusOK {
+			return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+		}
+	case 1:
+		opt := options.New()
+		opt.AddHeader(fmt.Sprintf("X-Test-%d-%d", routineNum, reqNum), "test")
+		resp, err := client.Post(baseURL+"/upload", []byte("test data"), opt)
+		if err != nil {
+			return err
+		}
+		if resp.StatusCode != http.StatusOK {
+			return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+		}
+	case 2:
+		opt := options.New()
+		opt.SetBufferOutput()
+		resp, err := client.Get(baseURL + "/download")
+		if err != nil {
+			return err
+		}
+		if resp.StatusCode != http.StatusOK {
+			return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+		}
+	}
+	return nil
+}
+
+func performUploadRequest(baseURL string, routineNum, reqNum int) error {
+	file, err := os.Open(smallf) // Using the small file for quicker tests
+	if err != nil {
+		return fmt.Errorf("failed to open file: %w", err)
+	}
+	defer file.Close()
+
+	opt := options.New()
+	opt.AddHeader(fmt.Sprintf("X-Upload-Test-%d-%d", routineNum, reqNum), "test")
+
+	resp, err := client.Post(baseURL+"/upload", file, opt)
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+	}
+	return nil
+}
+
+func performDownloadRequest(baseURL string, routineNum, reqNum int) error {
+	opt := options.New()
+	tempDir := os.TempDir()
+	downloadPath := filepath.Join(tempDir, fmt.Sprintf("download-%d-%d.txt", routineNum, reqNum))
+	opt.SetFileOutput(downloadPath)
+	defer os.Remove(downloadPath) // Clean up after test
+
+	resp, err := client.Get(baseURL+"/download", opt)
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+	}
+	return nil
 }
