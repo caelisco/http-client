@@ -17,11 +17,13 @@ import (
 )
 
 const (
-	SchemeHTTP  string = "http://"
-	SchemeHTTPS string = "https://"
-	SchemeWS    string = "ws://"
-	SchemeWSS   string = "wss://"
-	ContentType string = "Content-Type"
+	SchemeHTTP      string = "http://"
+	SchemeHTTPS     string = "https://"
+	SchemeWS        string = "ws://"
+	SchemeWSS       string = "wss://"
+	ContentType     string = "Content-Type"
+	ContentEncoding string = "Content-Encoding"
+	URLencoded      string = "application/x-www-form-urlencoded"
 )
 
 // doRequest performs the HTTP request to the server/resource.
@@ -210,11 +212,11 @@ func prepareRequest(method, url string, payloadReader io.Reader, contentLength i
 		opt.Header.Del("Content-Length")
 
 		if opt.Compression != options.CompressionCustom {
-			opt.Header.Set("Content-Encoding", string(opt.Compression))
+			opt.Header.Set(ContentEncoding, string(opt.Compression))
 		} else if opt.CustomCompressionType != "" {
-			opt.Header.Set("Content-Encoding", string(opt.CustomCompressionType))
+			opt.Header.Set(ContentEncoding, string(opt.CustomCompressionType))
 		} else {
-			opt.Header.Set("Content-Encoding", "application/octet-stream")
+			opt.Header.Set(ContentEncoding, "application/octet-stream")
 		}
 	}
 
@@ -320,7 +322,7 @@ func processResponse(r *http.Response, resp response.Response, opt *options.Opti
 		return resp, err
 	}
 
-	// Handle response body for buffer type
+	// Only store body in response if we're using a buffer writer
 	if buf, ok := writer.(*options.WriteCloserBuffer); ok {
 		resp.Body = *buf
 	}
@@ -400,7 +402,7 @@ func Post(url string, payload any, opts ...*options.Option) (response.Response, 
 // Returns the HTTP response and an error if any.
 func PostFormData(url string, payload map[string]string, opts ...*options.Option) (response.Response, error) {
 	opt := options.New(opts...)
-	opt.AddHeader(ContentType, "application/x-www-form-urlencoded")
+	opt.AddHeader(ContentType, URLencoded)
 
 	return Post(url, form.Encode(payload), opt)
 }
@@ -453,7 +455,7 @@ func Put(url string, payload any, opts ...*options.Option) (response.Response, e
 // Returns the HTTP response and an error if any.
 func PutFormData(url string, payload map[string]string, opts ...*options.Option) (response.Response, error) {
 	opt := options.New(opts...)
-	opt.AddHeader(ContentType, "application/x-www-form-urlencoded")
+	opt.AddHeader(ContentType, URLencoded)
 
 	return Put(url, form.Encode(payload), opt)
 }
@@ -507,7 +509,7 @@ func Patch(url string, payload any, opts ...*options.Option) (response.Response,
 // Returns the HTTP response and an error if any.
 func PatchFormData(url string, payload map[string]string, opts ...*options.Option) (response.Response, error) {
 	opt := options.New(opts...)
-	opt.AddHeader(ContentType, "application/x-www-form-urlencoded")
+	opt.AddHeader(ContentType, URLencoded)
 
 	return Patch(url, form.Encode(payload), opt)
 }

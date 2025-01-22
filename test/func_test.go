@@ -430,6 +430,31 @@ func TestFileDownload(t *testing.T) {
 	assert.Equal(t, int64(largefile.Len()), info.Size())
 }
 
+func TestFileDownloadDirectToFile(t *testing.T) {
+	server := setupTestServer(t)
+	defer server.Close()
+
+	var lastProgress float64
+	opt := options.New()
+	opt.SetFileOutput("download.txt")
+
+	opt.OnDownloadProgress = func(bytesRead, totalBytes int64) {
+		if totalBytes > 0 {
+			lastProgress = float64(bytesRead) / float64(totalBytes) * 100
+		}
+	}
+
+	resp, err := client.Get(server.URL+"/download", opt)
+	assert.NoError(t, err)
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	assert.Equal(t, float64(100), lastProgress)
+
+	info, err := os.Stat("download.txt")
+	assert.NoError(t, err)
+	assert.Equal(t, int64(largefile.Len()), info.Size())
+}
+
 func TestCustomHeaders(t *testing.T) {
 	server := setupTestServer(t)
 	defer server.Close()
