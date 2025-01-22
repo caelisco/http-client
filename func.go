@@ -11,9 +11,9 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/caelisco/http-client/form"
-	"github.com/caelisco/http-client/options"
-	"github.com/caelisco/http-client/response"
+	"github.com/caelisco/http-client/v2/form"
+	"github.com/caelisco/http-client/v2/options"
+	"github.com/caelisco/http-client/v2/response"
 )
 
 const (

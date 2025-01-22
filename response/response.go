@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/caelisco/http-client/options"
+	"github.com/caelisco/http-client/v2/options"
 )
 
 // Response represents the HTTP response along with additional metadata

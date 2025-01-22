@@ -21,9 +21,9 @@ import (
 	"math/rand"
 
 	"github.com/andybalholm/brotli"
-	client "github.com/caelisco/http-client"
-	"github.com/caelisco/http-client/options"
-	"github.com/caelisco/http-client/response"
+	client "github.com/caelisco/http-client/v2"
+	"github.com/caelisco/http-client/v2/options"
+	"github.com/caelisco/http-client/v2/response"
 	"github.com/golang/snappy"
 	"github.com/pierrec/lz4/v4"
 	"github.com/stretchr/testify/assert"
