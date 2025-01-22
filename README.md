@@ -2,6 +2,8 @@
 
 http-client provides a convenient way to interact with the web by creating an API that is wrapped around Go's http.Client
 
+The readme contains documentation for `v2.0.0`
+
 What started as a simple project for performing basic HTTP Methods with an underlying `bytes.Buffer` now includes:
 - API's to send urlencoded forms, upload files based on POST, PUT, PATCH
 - Implementation to send data based on different readers
@@ -14,16 +16,19 @@ What started as a simple project for performing basic HTTP Methods with an under
 - Keeping HTTP Method when following redirects (optionally)
 - Compression (gzip, deflate and brotli)
 - Custom compression
+- Following redirects and sending payloads to the redirect end point
+- Multipart uploads
+- Additional test cases for new functionality
 
 It has two modes of operation: 
 1. Normal HTTP method function calls
-2. A reusable client
+2. A reusable Client
 
 In most cases, the HTTP method function calls are probably what you are looking for.
 
 The reusable client is typically more useful in scenarios where you need to work with cookies, or in scenarios where it will be useful to keep track of past requests. An example could be for writing an API test that might require different headers/cookies to be set and used as part of the testing of each end point.
 
-The readme contains documentation for v2.0.0
+Note: the Client implementation does not have test cases, nor has been tested properly. Please report issues.
 
 # Test cases
 
