@@ -1,6 +1,7 @@
 package response
 
 import (
+	"bytes"
 	"crypto/tls"
 	"net/http"
 	"time"
@@ -71,6 +72,13 @@ func (r *Response) Len() int64 {
 		return -1
 	}
 	return int64(r.Body.Len())
+}
+
+func (r *Response) Buffer() *bytes.Buffer {
+	if r.Body.IsEmpty() {
+		return nil
+	}
+	return r.Body.Buffer
 }
 
 // PopulateResponse populates the Response struct with data from an http.Response

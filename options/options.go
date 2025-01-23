@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"compress/zlib"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
@@ -48,6 +49,7 @@ const (
 	IdentifierNone UniqueIdentifierType = ""     // No identifier
 	IdentifierUUID UniqueIdentifierType = "uuid" // UUID v4
 	IdentifierULID UniqueIdentifierType = "ulid" // ULID timestamp-based identifier
+	IdentifierRGS  UniqueIdentifierType = "rgs"  // Randomly generated string
 )
 
 // Common errors returned by Option methods
@@ -66,7 +68,8 @@ type Option struct {
 	client                   *http.Client                                   // Default or custom *http.Client
 	filename                 string                                         // keep track of the filename when using PrepareFile and following redirects
 	file                     *os.File                                       // If using a file (PrepareFile) store it here for better management
-	filesize                 int64                                          //size of file if being used
+	filesize                 int64                                          // size of file if being used
+	entropy                  *ulid.MonotonicEntropy                         // for ULID
 	Verbose                  bool                                           // Whether logging should be verbose or not
 	Logger                   slog.Logger                                    // Logging - default uses the slog TextHandler
 	Header                   http.Header                                    // Headers to be included in the request
@@ -112,6 +115,7 @@ func New(opts ...*Option) *Option {
 func defaultOption() *Option {
 	return &Option{
 		initialised: true,
+		entropy:     ulid.Monotonic(rand.Reader, 0),
 		client: &http.Client{
 			Timeout: 30 * time.Second,
 		},
@@ -502,9 +506,45 @@ func (opt *Option) GenerateIdentifier() string {
 	case IdentifierUUID:
 		return uuid.New().String()
 	case IdentifierULID:
-		return ulid.Make().String()
+		opt.mu.Lock()
+		defer opt.mu.Unlock()
+		return ulid.MustNew(ulid.Timestamp(time.Now()), opt.entropy).String()
+	case IdentifierRGS:
+		str, err := generateRandomString(15)
+		if err != nil {
+			opt.Logger.Warn("generateRandomString failed, falling back to uuid.", "error", err)
+			return uuid.New().String()
+		}
+		return str
 	}
 	return ""
+}
+
+// GenerateRandomString generates a cryptographically secure random string of the specified length
+const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+
+func generateRandomString(length int) (string, error) {
+	result := make([]byte, length)
+	maxByte := byte(256 - (256 % len(charset)))
+
+	for i := 0; i < length; {
+		b := make([]byte, 1)
+		_, err := rand.Read(b)
+		if err != nil {
+			return "", fmt.Errorf("failed to generate random string: %w", err)
+		}
+
+		// Reject numbers that would make the distribution uneven
+		if b[0] >= maxByte {
+			continue
+		}
+
+		// Map the byte to our charset
+		result[i] = charset[b[0]%byte(len(charset))]
+		i++
+	}
+
+	return string(result), nil
 }
 
 // SetDownloadBufferSize configures the buffer size used when downloading files.
