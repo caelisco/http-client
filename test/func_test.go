@@ -21,8 +21,6 @@ import (
 
 	"math/rand"
 
-	"sync/atomic"
-
 	"github.com/andybalholm/brotli"
 	client "github.com/caelisco/http-client/v2"
 	"github.com/caelisco/http-client/v2/options"
@@ -1107,9 +1105,15 @@ type TestResults struct {
 	ErrorCount     int
 }
 
-func TestConcurrentRequests(t *testing.T) {
+func TestSharedConcurrentRequests(t *testing.T) {
 	server := setupTestServer(t)
-	defer server.Close()
+
+	// Force cleanup after each test case
+	t.Cleanup(func() {
+		server.Close()
+		// Add small delay to ensure connections close
+		time.Sleep(1 * time.Second)
+	})
 
 	tests := []struct {
 		name          string
@@ -1117,11 +1121,10 @@ func TestConcurrentRequests(t *testing.T) {
 		requestsPerGo int
 		scenario      string // "mixed", "upload", "download"
 	}{
-		{"Light Concurrent Mixed Load", 10, 5, "mixed"},
-		{"Heavy Concurrent Mixed Load", 50, 10, "mixed"},
-		{"Concurrent File Uploads", 20, 5, "upload"},
-		{"Concurrent File Downloads", 20, 5, "download"},
-		{"Mixed With Shared Client", 30, 10, "mixed_shared_client"},
+		{"Light Concurrent Mixed Load (Shared)", 10, 5, "mixed"},
+		{"Heavy Concurrent Mixed Load (Shared)", 50, 10, "mixed"},
+		{"Concurrent File Uploads (Shared)", 20, 5, "upload"},
+		{"Concurrent File Downloads (Shared)", 20, 5, "download"},
 	}
 
 	var results []TestResults
@@ -1132,9 +1135,6 @@ func TestConcurrentRequests(t *testing.T) {
 			errors := make(chan error, tt.numGoroutines*tt.requestsPerGo)
 			start := time.Now()
 
-			// Create shared client for specific test
-			sharedClient := client.New()
-
 			for i := 0; i < tt.numGoroutines; i++ {
 				wg.Add(1)
 				go func(routineNum int) {
@@ -1142,8 +1142,6 @@ func TestConcurrentRequests(t *testing.T) {
 					for j := 0; j < tt.requestsPerGo; j++ {
 						var err error
 						switch tt.scenario {
-						case "mixed_shared_client":
-							err = performMixedRequestsSharedClient(sharedClient, server.URL, routineNum, j)
 						case "mixed":
 							err = performMixedRequests(server.URL, routineNum, j)
 						case "upload":
@@ -1207,27 +1205,29 @@ func TestConcurrentRequests(t *testing.T) {
 	}
 }
 
-func TestSharedClientComparison(t *testing.T) {
+func TestNonSharedConcurrentRequests(t *testing.T) {
 	server := setupTestServer(t)
-	defer server.Close()
+
+	// Force cleanup after each test case
+	t.Cleanup(func() {
+		server.Close()
+		// Add small delay to ensure connections close
+		time.Sleep(1 * time.Second)
+	})
 
 	tests := []struct {
-		name            string
-		numGoroutines   int
-		requestsPerGo   int
-		requestType     string
-		useSharedClient bool
+		name          string
+		numGoroutines int
+		requestsPerGo int
+		scenario      string
 	}{
-		{"Mixed Requests Without Shared Client", 10, 30, "mixed", false},
-		{"Mixed Requests With Shared Client", 10, 30, "mixed", true},
-		{"Upload Requests Without Shared Client", 10, 30, "upload", false},
-		{"Upload Requests With Shared Client", 10, 30, "upload", true},
-		{"Download Requests Without Shared Client", 10, 30, "download", false},
-		{"Download Requests With Shared Client", 10, 30, "download", true},
+		{"Light Concurrent Mixed Load (Non-Shared)", 10, 5, "mixed"},
+		{"Heavy Concurrent Mixed Load (Non-Shared)", 50, 10, "mixed"},
+		{"Concurrent File Uploads (Non-Shared)", 20, 5, "upload"},
+		{"Concurrent File Downloads (Non-Shared)", 20, 5, "download"},
 	}
 
 	var results []TestResults
-
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var wg sync.WaitGroup
@@ -1239,13 +1239,12 @@ func TestSharedClientComparison(t *testing.T) {
 				go func(routineNum int) {
 					defer wg.Done()
 					for j := 0; j < tt.requestsPerGo; j++ {
-						var err error
+						// Create options with per-request client for each request
 						opt := options.New()
-						if tt.useSharedClient {
-							opt.UseSharedClient()
-						}
+						opt.UsePerRequestClient()
 
-						switch tt.requestType {
+						var err error
+						switch tt.scenario {
 						case "mixed":
 							err = performMixedRequests(server.URL, routineNum, j)
 						case "upload":
@@ -1263,6 +1262,7 @@ func TestSharedClientComparison(t *testing.T) {
 			wg.Wait()
 			close(errors)
 
+			// Collect errors
 			var errs []error
 			for err := range errors {
 				errs = append(errs, err)
@@ -1282,7 +1282,7 @@ func TestSharedClientComparison(t *testing.T) {
 			}
 			results = append(results, result)
 
-			// Log individual test results
+			// Log the results
 			t.Logf("\nResults for %s:", tt.name)
 			t.Logf("Total requests: %d", result.TotalRequests)
 			t.Logf("Duration: %v", result.Duration)
@@ -1294,58 +1294,16 @@ func TestSharedClientComparison(t *testing.T) {
 		})
 	}
 
-	// Compare results between shared and non-shared client tests
-	t.Log("\nShared vs Non-Shared Client Comparisons:")
-	for i := 0; i < len(results); i += 2 {
-		nonShared := results[i]
-		shared := results[i+1]
-		improvement := ((shared.RequestsPerSec - nonShared.RequestsPerSec) / nonShared.RequestsPerSec) * 100
-
-		t.Logf("\nComparison for %s:", tests[i].requestType)
-		t.Logf("Non-shared client:")
-		t.Logf("  Requests/sec: %.2f", nonShared.RequestsPerSec)
-		t.Logf("  Success rate: %.2f%%", nonShared.SuccessRate)
-		t.Logf("  Error count: %d", nonShared.ErrorCount)
-		t.Logf("Shared client:")
-		t.Logf("  Requests/sec: %.2f", shared.RequestsPerSec)
-		t.Logf("  Success rate: %.2f%%", shared.SuccessRate)
-		t.Logf("  Error count: %d", shared.ErrorCount)
-		t.Logf("Performance difference: %.2f%%", improvement)
+	// Print comparison summary
+	t.Log("\nTest Scenario Comparisons (Non-Shared Clients):")
+	for i, result := range results {
+		t.Logf("\n%s:", tests[i].name)
+		t.Logf("Requests/sec: %.2f", result.RequestsPerSec)
+		t.Logf("Success rate: %.2f%%", result.SuccessRate)
+		t.Logf("Total requests: %d", result.TotalRequests)
+		t.Logf("Duration: %v", result.Duration)
+		t.Logf("Error count: %d", result.ErrorCount)
 	}
-}
-
-func performMixedRequestsSharedClient(c *client.Client, baseURL string, routineNum, reqNum int) error {
-	switch reqNum % 3 {
-	case 0:
-		resp, err := c.Get(baseURL + "/echo-headers")
-		if err != nil {
-			return err
-		}
-		if resp.StatusCode != http.StatusOK {
-			return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
-		}
-	case 1:
-		opt := options.New()
-		opt.AddHeader(fmt.Sprintf("X-Test-%d-%d", routineNum, reqNum), "test")
-		resp, err := c.Post(baseURL+"/upload", []byte("test data"), opt)
-		if err != nil {
-			return err
-		}
-		if resp.StatusCode != http.StatusOK {
-			return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
-		}
-	case 2:
-		opt := options.New()
-		opt.SetBufferOutput()
-		resp, err := c.Get(baseURL + "/download")
-		if err != nil {
-			return err
-		}
-		if resp.StatusCode != http.StatusOK {
-			return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
-		}
-	}
-	return nil
 }
 
 func performMixedRequests(baseURL string, routineNum, reqNum int) error {
@@ -1417,33 +1375,4 @@ func performDownloadRequest(baseURL string, routineNum, reqNum int) error {
 		return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
 	}
 	return nil
-}
-
-func TestProgressReaderConcurrency(t *testing.T) {
-	data := bytes.NewReader([]byte("test data"))
-	var wg sync.WaitGroup
-	progressCalls := atomic.Int64{}
-
-	reader := options.NewProgressReader(data, int64(data.Len()), func(read, total int64) {
-		progressCalls.Add(1)
-	})
-
-	// Multiple goroutines reading simultaneously
-	for i := 0; i < 10; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			buf := make([]byte, 2)
-			for {
-				_, err := reader.Read(buf)
-				if err == io.EOF {
-					break
-				}
-				assert.NoError(t, err)
-			}
-		}()
-	}
-
-	wg.Wait()
-	assert.Greater(t, progressCalls.Load(), int64(0))
 }

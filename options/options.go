@@ -8,15 +8,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"log/slog"
 	"mime"
-	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/andybalholm/brotli"
@@ -61,17 +60,6 @@ var (
 	ErrInvalidCompression = errors.New("unsupported compression type")
 )
 
-var (
-	sharedHttpClient atomic.Pointer[http.Client]
-	sharedClientOnce sync.Once
-)
-
-func initSharedClient() {
-	sharedClientOnce.Do(func() {
-		sharedHttpClient.Store(defaultClient())
-	})
-}
-
 // Option provides configuration for HTTP requests. It allows customization of various aspects
 // of the request including headers, compression, logging, response handling, and progress tracking.
 // If no options are provided when making a request, a default configuration is automatically generated.
@@ -111,7 +99,7 @@ type Option struct {
 // via the variadic parameter, they will be merged with the default settings, with the provided
 // options taking precedence.
 func New(opts ...*Option) *Option {
-	if len(opts) > 0 {
+	if len(opts) > 0 && opts[0] != nil {
 		// if the variadic parameter Option
 		if opts[0].initialised {
 			return opts[0]
@@ -121,7 +109,7 @@ func New(opts ...*Option) *Option {
 		opt.Merge(opts[0])
 		return opt
 	}
-	// No options provided; return a new default Option
+	// No options provided or nil option; return a new default Option
 	return defaultOption()
 }
 
@@ -129,9 +117,9 @@ func New(opts ...*Option) *Option {
 func defaultOption() *Option {
 	return &Option{
 		initialised:              true,
-		useSharedClient:          false,
+		useSharedClient:          true, // Default to using shared client (http.DefaultClient)
+		client:                   nil,  // Don't create a client yet
 		entropy:                  ulid.Monotonic(rand.Reader, 0),
-		client:                   defaultClient(),
 		Verbose:                  false,
 		Logger:                   *slog.New(slog.NewTextHandler(os.Stdout, nil)),
 		Header:                   http.Header{},
@@ -141,51 +129,15 @@ func defaultOption() *Option {
 		PreserveMethodOnRedirect: false,
 		MaxRedirects:             10,
 		UniqueIdentifierType:     IdentifierULID,
-		Transport:                defaultTransport(),
+		Transport:                http.DefaultTransport.(*http.Transport),
 		ResponseWriter: ResponseWriter{
 			Type: WriteToBuffer,
 		},
 	}
 }
 
-func defaultClient() *http.Client {
-	return &http.Client{
-		Transport: defaultTransport(),
-		Timeout:   30 * time.Second,
-	}
-}
-
-// defaultTransport creates and returns an http.Transport configured for typical internal/low-latency
-// operations. The settings are optimized for reliable HTTP client usage in environments where
-// request volume is moderate and network conditions are generally good.
-func defaultTransport() *http.Transport {
-	return &http.Transport{
-		// Use proxy settings from environment variables (HTTP_PROXY, HTTPS_PROXY, NO_PROXY)
-		Proxy: http.ProxyFromEnvironment,
-
-		// Configure the dialer with conservative timeouts for typical internal network conditions
-		DialContext: (&net.Dialer{
-			Timeout:   15 * time.Second, // Shorter timeout for internal services
-			KeepAlive: 15 * time.Second, // Moderate keep-alive for connection reuse
-			DualStack: true,             // Support both IPv4 and IPv6
-		}).DialContext,
-
-		// Connection pooling settings for moderate traffic
-		MaxIdleConns:        50, // Total idle connections in the pool
-		MaxIdleConnsPerHost: 10, // Idle connections per host (internal services typically use few hosts)
-		MaxConnsPerHost:     10, // Limit concurrent connections per host
-
-		// Timeout settings optimized for internal network conditions
-		IdleConnTimeout:       60 * time.Second, // How long to keep idle connections
-		ResponseHeaderTimeout: 30 * time.Second, // Max time to wait for response headers
-		TLSHandshakeTimeout:   5 * time.Second,  // Max time for TLS handshake
-		ExpectContinueTimeout: 1 * time.Second,  // Timeout for 100-continue responses
-
-		// Protocol and behavior settings
-		ForceAttemptHTTP2:  true,  // Prefer HTTP/2 when available
-		DisableCompression: false, // Allow response compression
-		DisableKeepAlives:  false, // Enable connection reuse
-	}
+func cloneTransport() *http.Transport {
+	return http.DefaultTransport.(*http.Transport).Clone()
 }
 
 // GetClient returns the HTTP client to be used for requests.
@@ -193,13 +145,20 @@ func defaultTransport() *http.Transport {
 // Otherwise, returns a new default http.Client instance.
 func (opt *Option) GetClient() *http.Client {
 	if opt.useSharedClient {
-		initSharedClient()
-		return sharedHttpClient.Load()
+		return http.DefaultClient
 	}
+
+	// If a custom client was set, use it
 	if opt.client != nil {
 		return opt.client
 	}
-	return &http.Client{}
+
+	// Create a new client for non-shared, non-custom case
+	opt.client = &http.Client{
+		Transport: cloneTransport(),
+		Timeout:   30 * time.Second,
+	}
+	return opt.client
 }
 
 // SetClient configures a custom HTTP client to be used for requests.
@@ -208,9 +167,11 @@ func (opt *Option) GetClient() *http.Client {
 // configured with any desired settings (timeouts, transport, etc) before
 // being set.
 func (opt *Option) SetClient(client *http.Client) {
-	if opt.useSharedClient {
-		panic("cannot set client when using shared client")
+	if client == nil {
+		log.Println("client cannot be nil")
+		return
 	}
+	opt.useSharedClient = false // Disable shared client when setting custom
 	opt.client = client
 }
 
@@ -220,14 +181,17 @@ func (opt *Option) SetClient(client *http.Client) {
 // The shared client is thread-safe and can be used concurrently across multiple goroutines.
 func (opt *Option) UseSharedClient() {
 	opt.useSharedClient = true
+	opt.client = nil // Clear any custom client
 }
 
 // UsePerRequestClient disables the use of the shared HTTP client for this Option instance.
 // This creates a new client for each request, providing better isolation at the cost of
 // performance. Use this when you need complete isolation between requests or when you want
 // to customize client behavior for specific requests without affecting other requests.
+// UsePerRequestClient disables shared client and ensures a new client is created
 func (opt *Option) UsePerRequestClient() {
 	opt.useSharedClient = false
+	opt.client = nil // Force creation of new client in GetClient
 }
 
 // Log logs a message with the configured logger if verbose logging is enabled.
@@ -800,20 +764,4 @@ func (opt *Option) Merge(src *Option) {
 	if src.OnDownloadProgress != nil {
 		opt.OnDownloadProgress = src.OnDownloadProgress
 	}
-}
-
-// SetSharedClient configures a custom HTTP client to be used as the shared client.
-// This client will be used for all requests that have useSharedClient enabled.
-// The provided client should be configured with any desired settings (timeouts,
-// transport, etc) before being set. This operation is atomic and thread-safe.
-func SetSharedClient(client *http.Client) {
-	sharedHttpClient.Store(client)
-}
-
-// ResetSharedClient clears the shared HTTP client, forcing a new default client
-// to be created on the next request that uses the shared client. This is particularly
-// useful in testing scenarios where you want to ensure a clean state. This operation
-// is atomic and thread-safe.
-func ResetSharedClient() {
-	sharedHttpClient.Store(nil)
 }
