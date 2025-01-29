@@ -1098,6 +1098,15 @@ func TestMultipartUpload(t *testing.T) {
 	}
 }
 
+// TestResults stores metrics from concurrent request tests
+type TestResults struct {
+	TotalRequests  int
+	Duration       time.Duration
+	RequestsPerSec float64
+	SuccessRate    float64
+	ErrorCount     int
+}
+
 func TestConcurrentRequests(t *testing.T) {
 	server := setupTestServer(t)
 	defer server.Close()
@@ -1115,6 +1124,8 @@ func TestConcurrentRequests(t *testing.T) {
 		{"Mixed With Shared Client", 30, 10, "mixed_shared_client"},
 	}
 
+	var results []TestResults
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var wg sync.WaitGroup
@@ -1130,7 +1141,6 @@ func TestConcurrentRequests(t *testing.T) {
 					defer wg.Done()
 					for j := 0; j < tt.requestsPerGo; j++ {
 						var err error
-						// Remove the unused response.Response declaration
 						switch tt.scenario {
 						case "mixed_shared_client":
 							err = performMixedRequestsSharedClient(sharedClient, server.URL, routineNum, j)
@@ -1151,7 +1161,7 @@ func TestConcurrentRequests(t *testing.T) {
 			wg.Wait()
 			close(errors)
 
-			// Collect and report errors
+			// Collect errors
 			var errs []error
 			for err := range errors {
 				errs = append(errs, err)
@@ -1160,23 +1170,147 @@ func TestConcurrentRequests(t *testing.T) {
 			duration := time.Since(start)
 			totalRequests := tt.numGoroutines * tt.requestsPerGo
 			successRate := float64(totalRequests-len(errs)) / float64(totalRequests) * 100
+			requestsPerSec := float64(totalRequests) / duration.Seconds()
 
-			t.Logf("Test: %s", tt.name)
-			t.Logf("Total requests: %d", totalRequests)
-			t.Logf("Duration: %v", duration)
-			t.Logf("Requests/second: %.2f", float64(totalRequests)/duration.Seconds())
-			t.Logf("Success rate: %.2f%%", successRate)
-
-			if len(errs) > 0 {
-				t.Logf("Errors encountered: %d", len(errs))
-				for _, err := range errs {
-					t.Logf("Error: %v", err)
-				}
+			// Create TestResults for this test
+			result := TestResults{
+				TotalRequests:  totalRequests,
+				Duration:       duration,
+				RequestsPerSec: requestsPerSec,
+				SuccessRate:    successRate,
+				ErrorCount:     len(errs),
 			}
+			results = append(results, result)
+
+			// Log the results
+			t.Logf("\nResults for %s:", tt.name)
+			t.Logf("Total requests: %d", result.TotalRequests)
+			t.Logf("Duration: %v", result.Duration)
+			t.Logf("Requests/second: %.2f", result.RequestsPerSec)
+			t.Logf("Success rate: %.2f%%", result.SuccessRate)
+			t.Logf("Error count: %d", result.ErrorCount)
 
 			// Assert high success rate
-			assert.GreaterOrEqual(t, successRate, 95.0, "Success rate should be at least 95%")
+			assert.GreaterOrEqual(t, result.SuccessRate, 95.0, "Success rate should be at least 95%")
 		})
+	}
+
+	// Print comparison summary at the end
+	t.Log("\nTest Scenario Comparisons:")
+	for i, result := range results {
+		t.Logf("\n%s:", tests[i].name)
+		t.Logf("Requests/sec: %.2f", result.RequestsPerSec)
+		t.Logf("Success rate: %.2f%%", result.SuccessRate)
+		t.Logf("Total requests: %d", result.TotalRequests)
+		t.Logf("Duration: %v", result.Duration)
+		t.Logf("Error count: %d", result.ErrorCount)
+	}
+}
+
+func TestSharedClientComparison(t *testing.T) {
+	server := setupTestServer(t)
+	defer server.Close()
+
+	tests := []struct {
+		name            string
+		numGoroutines   int
+		requestsPerGo   int
+		requestType     string
+		useSharedClient bool
+	}{
+		{"Mixed Requests Without Shared Client", 10, 30, "mixed", false},
+		{"Mixed Requests With Shared Client", 10, 30, "mixed", true},
+		{"Upload Requests Without Shared Client", 10, 30, "upload", false},
+		{"Upload Requests With Shared Client", 10, 30, "upload", true},
+		{"Download Requests Without Shared Client", 10, 30, "download", false},
+		{"Download Requests With Shared Client", 10, 30, "download", true},
+	}
+
+	var results []TestResults
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var wg sync.WaitGroup
+			errors := make(chan error, tt.numGoroutines*tt.requestsPerGo)
+			start := time.Now()
+
+			for i := 0; i < tt.numGoroutines; i++ {
+				wg.Add(1)
+				go func(routineNum int) {
+					defer wg.Done()
+					for j := 0; j < tt.requestsPerGo; j++ {
+						var err error
+						opt := options.New()
+						if tt.useSharedClient {
+							opt.UseSharedClient()
+						}
+
+						switch tt.requestType {
+						case "mixed":
+							err = performMixedRequests(server.URL, routineNum, j)
+						case "upload":
+							err = performUploadRequest(server.URL, routineNum, j)
+						case "download":
+							err = performDownloadRequest(server.URL, routineNum, j)
+						}
+						if err != nil {
+							errors <- fmt.Errorf("routine %d request %d: %w", routineNum, j, err)
+						}
+					}
+				}(i)
+			}
+
+			wg.Wait()
+			close(errors)
+
+			var errs []error
+			for err := range errors {
+				errs = append(errs, err)
+			}
+
+			duration := time.Since(start)
+			totalRequests := tt.numGoroutines * tt.requestsPerGo
+			successRate := float64(totalRequests-len(errs)) / float64(totalRequests) * 100
+			requestsPerSec := float64(totalRequests) / duration.Seconds()
+
+			result := TestResults{
+				TotalRequests:  totalRequests,
+				Duration:       duration,
+				RequestsPerSec: requestsPerSec,
+				SuccessRate:    successRate,
+				ErrorCount:     len(errs),
+			}
+			results = append(results, result)
+
+			// Log individual test results
+			t.Logf("\nResults for %s:", tt.name)
+			t.Logf("Total requests: %d", result.TotalRequests)
+			t.Logf("Duration: %v", result.Duration)
+			t.Logf("Requests/second: %.2f", result.RequestsPerSec)
+			t.Logf("Success rate: %.2f%%", result.SuccessRate)
+			t.Logf("Error count: %d", result.ErrorCount)
+
+			assert.GreaterOrEqual(t, result.SuccessRate, 95.0, "Success rate should be at least 95%")
+		})
+	}
+
+	// Compare results between shared and non-shared client tests
+	t.Log("\nShared vs Non-Shared Client Comparisons:")
+	for i := 0; i < len(results); i += 2 {
+		nonShared := results[i]
+		shared := results[i+1]
+		improvement := ((shared.RequestsPerSec - nonShared.RequestsPerSec) / nonShared.RequestsPerSec) * 100
+
+		t.Logf("\nComparison for %s:", tests[i].requestType)
+		t.Logf("Non-shared client:")
+		t.Logf("  Requests/sec: %.2f", nonShared.RequestsPerSec)
+		t.Logf("  Success rate: %.2f%%", nonShared.SuccessRate)
+		t.Logf("  Error count: %d", nonShared.ErrorCount)
+		t.Logf("Shared client:")
+		t.Logf("  Requests/sec: %.2f", shared.RequestsPerSec)
+		t.Logf("  Success rate: %.2f%%", shared.SuccessRate)
+		t.Logf("  Error count: %d", shared.ErrorCount)
+		t.Logf("Performance difference: %.2f%%", improvement)
 	}
 }
 

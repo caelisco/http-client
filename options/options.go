@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/andybalholm/brotli"
@@ -60,11 +61,23 @@ var (
 	ErrInvalidCompression = errors.New("unsupported compression type")
 )
 
+var (
+	sharedHttpClient atomic.Pointer[http.Client]
+	sharedClientOnce sync.Once
+)
+
+func initSharedClient() {
+	sharedClientOnce.Do(func() {
+		sharedHttpClient.Store(defaultClient())
+	})
+}
+
 // Option provides configuration for HTTP requests. It allows customization of various aspects
 // of the request including headers, compression, logging, response handling, and progress tracking.
 // If no options are provided when making a request, a default configuration is automatically generated.
 type Option struct {
 	initialised              bool                                           // Internal - determine if the struct was initialised with a call to New()
+	useSharedClient          bool                                           // Internal - use of the shared *http.Client or the client bound to the Option struct
 	client                   *http.Client                                   // Default or custom *http.Client
 	filename                 string                                         // keep track of the filename when using PrepareFile and following redirects
 	file                     *os.File                                       // If using a file (PrepareFile) store it here for better management
@@ -115,11 +128,10 @@ func New(opts ...*Option) *Option {
 // defaultOption initializes and returns a default Option with pre-configured settings.
 func defaultOption() *Option {
 	return &Option{
-		initialised: true,
-		entropy:     ulid.Monotonic(rand.Reader, 0),
-		client: &http.Client{
-			Timeout: 30 * time.Second,
-		},
+		initialised:              true,
+		useSharedClient:          false,
+		entropy:                  ulid.Monotonic(rand.Reader, 0),
+		client:                   defaultClient(),
 		Verbose:                  false,
 		Logger:                   *slog.New(slog.NewTextHandler(os.Stdout, nil)),
 		Header:                   http.Header{},
@@ -133,6 +145,13 @@ func defaultOption() *Option {
 		ResponseWriter: ResponseWriter{
 			Type: WriteToBuffer,
 		},
+	}
+}
+
+func defaultClient() *http.Client {
+	return &http.Client{
+		Transport: defaultTransport(),
+		Timeout:   30 * time.Second,
 	}
 }
 
@@ -167,6 +186,48 @@ func defaultTransport() *http.Transport {
 		DisableCompression: false, // Allow response compression
 		DisableKeepAlives:  false, // Enable connection reuse
 	}
+}
+
+// GetClient returns the HTTP client to be used for requests.
+// If a custom client has been set via SetClient, that client is returned.
+// Otherwise, returns a new default http.Client instance.
+func (opt *Option) GetClient() *http.Client {
+	if opt.useSharedClient {
+		initSharedClient()
+		return sharedHttpClient.Load()
+	}
+	if opt.client != nil {
+		return opt.client
+	}
+	return &http.Client{}
+}
+
+// SetClient configures a custom HTTP client to be used for requests.
+// This client will be used instead of the default client for all subsequent
+// requests made with this Option instance. The provided client should be
+// configured with any desired settings (timeouts, transport, etc) before
+// being set.
+func (opt *Option) SetClient(client *http.Client) {
+	if opt.useSharedClient {
+		panic("cannot set client when using shared client")
+	}
+	opt.client = client
+}
+
+// UseSharedClient enables the use of the shared HTTP client for this Option instance.
+// Using a shared client provides better performance through connection pooling and reuse,
+// especially when making multiple requests to the same host. This is the default behavior.
+// The shared client is thread-safe and can be used concurrently across multiple goroutines.
+func (opt *Option) UseSharedClient() {
+	opt.useSharedClient = true
+}
+
+// UsePerRequestClient disables the use of the shared HTTP client for this Option instance.
+// This creates a new client for each request, providing better isolation at the cost of
+// performance. Use this when you need complete isolation between requests or when you want
+// to customize client behavior for specific requests without affecting other requests.
+func (opt *Option) UsePerRequestClient() {
+	opt.useSharedClient = false
 }
 
 // Log logs a message with the configured logger if verbose logging is enabled.
@@ -741,21 +802,18 @@ func (opt *Option) Merge(src *Option) {
 	}
 }
 
-// GetClient returns the HTTP client to be used for requests.
-// If a custom client has been set via SetClient, that client is returned.
-// Otherwise, returns a new default http.Client instance.
-func (o *Option) GetClient() *http.Client {
-	if o.client != nil {
-		return o.client
-	}
-	return &http.Client{}
+// SetSharedClient configures a custom HTTP client to be used as the shared client.
+// This client will be used for all requests that have useSharedClient enabled.
+// The provided client should be configured with any desired settings (timeouts,
+// transport, etc) before being set. This operation is atomic and thread-safe.
+func SetSharedClient(client *http.Client) {
+	sharedHttpClient.Store(client)
 }
 
-// SetClient configures a custom HTTP client to be used for requests.
-// This client will be used instead of the default client for all subsequent
-// requests made with this Option instance. The provided client should be
-// configured with any desired settings (timeouts, transport, etc) before
-// being set.
-func (opt *Option) SetClient(client *http.Client) {
-	opt.client = client
+// ResetSharedClient clears the shared HTTP client, forcing a new default client
+// to be created on the next request that uses the shared client. This is particularly
+// useful in testing scenarios where you want to ensure a clean state. This operation
+// is atomic and thread-safe.
+func ResetSharedClient() {
+	sharedHttpClient.Store(nil)
 }
