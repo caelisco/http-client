@@ -78,6 +78,7 @@ type Option struct {
 	Compression              CompressionType                                // CompressionType to use: none, gzip, deflate or brotli
 	CustomCompressionType    CompressionType                                // When using a custom compression, specify the type to be used as the content-encoding header.
 	CustomCompressor         func(w *io.PipeWriter) (io.WriteCloser, error) // Function for custom compression
+	CustomDecompressor       func(r io.Reader) (io.Reader, error)           // Function for custom decompression
 	UserAgent                string                                         // User Agent to send with requests
 	FollowRedirects          bool                                           // Disable or enable redirects. Default is false i.e.: follow redirects
 	PreserveMethodOnRedirect bool                                           // Default is false
@@ -244,12 +245,6 @@ func (opt *Option) SetProtocolScheme(scheme string) {
 		scheme += "://"
 	}
 	opt.ProtocolScheme = scheme
-}
-
-// SetCompression configures the compression type to be used for the request.
-// Valid compression types include: none, gzip, deflate, brotli, and custom.
-func (opt *Option) SetCompression(compressionType CompressionType) {
-	opt.Compression = compressionType
 }
 
 // CreatePayloadReader converts the given payload into an io.Reader along with its size.
@@ -430,9 +425,13 @@ func (opt *Option) InferContentType(file *os.File, fileInfo os.FileInfo) error {
 	return nil
 }
 
+// SetCompression configures the compression type to be used for the request.
+// Valid compression types include: none, gzip, deflate, brotli, and custom.
+func (opt *Option) SetCompression(compressionType CompressionType) {
+	opt.Compression = compressionType
+}
+
 // GetCompressor returns an appropriate io.WriteCloser based on the configured compression type.
-// Returns an error if the compression type is unsupported or if a custom compressor
-// is not properly configured.
 func (opt *Option) GetCompressor(w *io.PipeWriter) (io.WriteCloser, error) {
 	switch opt.Compression {
 	case CompressionGzip:
@@ -442,13 +441,41 @@ func (opt *Option) GetCompressor(w *io.PipeWriter) (io.WriteCloser, error) {
 	case CompressionBrotli:
 		return brotli.NewWriter(w), nil
 	case CompressionCustom:
-		if opt.CustomCompressor != nil {
-			writer, err := opt.CustomCompressor(w)
-			return writer, err
+		if opt.CustomCompressor == nil {
+			return nil, fmt.Errorf("custom compression specified but no compressor provided")
 		}
-		return nil, ErrInvalidCompression
+		return opt.CustomCompressor(w)
+	case CompressionNone:
+		return nil, nil
 	default:
-		return nil, ErrInvalidCompression
+		return nil, fmt.Errorf("unsupported compression type: %s", opt.Compression)
+	}
+}
+
+// GetDecompressor returns an appropriate io.Reader for the given encoding.
+func (opt *Option) GetDecompressor(r io.ReadCloser, encoding string) (io.ReadCloser, error) {
+	switch encoding {
+	case "":
+		return r, nil
+	case string(CompressionGzip):
+		return gzip.NewReader(r)
+	case string(CompressionDeflate):
+		return zlib.NewReader(r)
+	case string(CompressionBrotli):
+		return io.NopCloser(brotli.NewReader(r)), nil
+	default:
+		// Try custom decompressor if available
+		if opt.CustomDecompressor != nil {
+			reader, err := opt.CustomDecompressor(r)
+			if err != nil {
+				return nil, err
+			}
+			if rc, ok := reader.(io.ReadCloser); ok {
+				return rc, nil
+			}
+			return io.NopCloser(reader), nil
+		}
+		return nil, fmt.Errorf("unsupported compression type: %s", encoding)
 	}
 }
 
@@ -686,6 +713,10 @@ func (opt *Option) Merge(src *Option) {
 
 	if src.CustomCompressor != nil {
 		opt.CustomCompressor = src.CustomCompressor
+	}
+
+	if src.CustomDecompressor != nil {
+		opt.CustomDecompressor = src.CustomDecompressor
 	}
 
 	if src.UserAgent != "" {

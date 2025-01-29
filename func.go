@@ -297,6 +297,16 @@ func compressData(pw *io.PipeWriter, reader io.Reader, opt *options.Option) {
 func processResponse(r *http.Response, resp response.Response, opt *options.Option, startTime time.Time) (response.Response, error) {
 	defer r.Body.Close()
 
+	// Get content encoding
+	encoding := r.Header.Get("Content-Encoding")
+
+	// Create decompressed reader
+	decompressedBody, err := opt.GetDecompressor(r.Body, encoding)
+	if err != nil {
+		return resp, fmt.Errorf("failed to create decompressed reader: %w", err)
+	}
+	defer decompressedBody.Close()
+
 	// Initialize writer
 	writer, err := opt.InitialiseWriter()
 	if err != nil {
@@ -304,17 +314,21 @@ func processResponse(r *http.Response, resp response.Response, opt *options.Opti
 	}
 	defer writer.Close()
 
-	// Set up progress tracking for download if needed
+	// Get total size from Content-Length header
+	totalSize := r.ContentLength
+
+	// Track progress at the read level instead of write level
+	var reader io.Reader = decompressedBody
 	if opt.OnDownloadProgress != nil {
-		writer = options.ProgressWriter(writer, r.ContentLength, opt.OnDownloadProgress)
+		reader = options.NewProgressReader(decompressedBody, totalSize, opt.OnDownloadProgress)
 	}
 
 	// Copy response body
 	if opt.DownloadBufferSize != nil {
 		buf := make([]byte, *opt.DownloadBufferSize)
-		_, err = io.CopyBuffer(writer, r.Body, buf)
+		_, err = io.CopyBuffer(writer, reader, buf)
 	} else {
-		_, err = io.Copy(writer, r.Body)
+		_, err = io.Copy(writer, reader)
 	}
 
 	if err != nil {
