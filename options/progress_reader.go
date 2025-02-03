@@ -2,83 +2,57 @@ package options
 
 import (
 	"io"
-	"sync"
 	"sync/atomic"
 )
 
-// progressReader wraps an io.Reader to track the progress of data being read.
-// It reports progress using the onProgress callback, which is invoked with
-// the number of bytes read so far and the total bytes expected to be read.
-type ProgressReader struct {
-	reader     io.Reader
-	total      int64
-	read       atomic.Int64
-	onProgress func(read, total int64)
-
-	// Protects callback execution and any shared state
-	callbackMu sync.Mutex
-
-	// Track if this reader is part of a redirect chain
-	isRedirect bool
-	parent     *ProgressReader // Reference to original reader in redirect chain
+// progress wraps an io.Writer to track bytes processed during I/O operations.
+// It uses atomic operations to safely track progress in concurrent scenarios.
+type progress struct {
+	current    atomic.Int64
+	totalSize  int64
+	onProgress func(current, total int64)
 }
 
-// ProgressReader creates a new progressReader to monitor reading progress.
-// The total parameter specifies the expected total size of the data.
-// The onProgress callback is invoked with the current and total read values.
-func NewProgressReader(reader io.Reader, total int64, onProgress func(read, total int64)) *ProgressReader {
-	return &ProgressReader{
-		reader:     reader,
-		total:      total,
+// NewProgressReader returns an io.Reader that reports progress during read operations.
+// If totalSize is <= 0, it attempts to determine size using io.Seeker if available.
+// The onProgress callback receives current bytes read and total size (-1 if unknown).
+func NewProgressReader(r io.Reader, totalSize int64, onProgress func(current, total int64)) io.Reader {
+	if totalSize <= 0 {
+		// Try to get size from Seeker if available
+		if seeker, ok := r.(io.Seeker); ok {
+			if size, err := seeker.Seek(0, io.SeekEnd); err == nil {
+				seeker.Seek(0, io.SeekStart) // Reset position
+				totalSize = size
+			}
+		}
+	}
+
+	p := &progress{
+		totalSize:  totalSize,
 		onProgress: onProgress,
 	}
+	return io.TeeReader(r, p)
 }
 
-// CloneForRedirect creates a new progressReader that shares progress tracking
-// with the original reader, making it safe for redirect chains
-func (pr *ProgressReader) CloneForRedirect() *ProgressReader {
-	if pr.isRedirect {
-		// If this is already a redirect clone, use its parent
-		return &ProgressReader{
-			parent:     pr.parent,
-			isRedirect: true,
-			total:      pr.total,
-			onProgress: pr.parent.onProgress,
+// Write implements io.Writer and updates progress atomically.
+// Returns number of bytes written and any error that occurred.
+func (p *progress) Write(b []byte) (int, error) {
+	n := len(b)
+	current := p.current.Add(int64(n))
+	if p.onProgress != nil {
+		if p.totalSize > 0 {
+			// We know the total size, report percentage
+			p.onProgress(current, p.totalSize)
+		} else {
+			// Unknown total size (e.g. compressed content)
+			// Just report the bytes read
+			p.onProgress(current, -1)
 		}
 	}
-
-	return &ProgressReader{
-		parent:     pr,
-		isRedirect: true,
-		total:      pr.total,
-		onProgress: pr.onProgress,
-	}
+	return n, nil
 }
 
-// Read reads data from the underlying io.Reader and tracks the number of bytes read.
-func (pr *ProgressReader) Read(p []byte) (int, error) {
-	// If this is a redirect clone, delegate to parent
-	if pr.isRedirect && pr.parent != nil {
-		return pr.parent.Read(p)
-	}
-
-	n, err := pr.reader.Read(p)
-
-	if n > 0 {
-		newRead := pr.read.Add(int64(n))
-		if pr.onProgress != nil {
-			pr.callbackMu.Lock()
-			pr.onProgress(newRead, pr.total)
-			pr.callbackMu.Unlock()
-		}
-	}
-	return n, err
-}
-
-// GetProgress returns the current number of bytes read
-func (pr *ProgressReader) GetProgress() int64 {
-	if pr.isRedirect && pr.parent != nil {
-		return pr.parent.GetProgress()
-	}
-	return pr.read.Load()
+// Reset zeroes the progress counter back to its initial state.
+func (p *progress) Reset() {
+	p.current.Store(0)
 }

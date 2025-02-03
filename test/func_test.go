@@ -9,10 +9,12 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -28,6 +30,8 @@ import (
 	"github.com/golang/snappy"
 	"github.com/pierrec/lz4/v4"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
 )
 
 const (
@@ -39,8 +43,9 @@ const (
 )
 
 var (
-	smallfile *bytes.Buffer
-	largefile *bytes.Buffer
+	smallfile         *bytes.Buffer
+	largefile         *bytes.Buffer
+	globalTestResults []TestResultSet
 )
 
 func init() {
@@ -114,6 +119,26 @@ func generateRandomString(length int) string {
 	return string(result)
 }
 
+// TestResultSet represents a complete set of test results with metadata
+type TestResultSet struct {
+	Timestamp   time.Time    `yaml:"timestamp"`
+	TestName    string       `yaml:"test_name"`
+	Environment string       `yaml:"environment"`
+	Results     []TestResult `yaml:"results"`
+}
+
+// TestResult represents a single test scenario result
+type TestResult struct {
+	ScenarioName   string        `yaml:"scenario_name"`
+	NumGoroutines  int           `yaml:"num_goroutines"`
+	RequestsPerGo  int           `yaml:"requests_per_go"`
+	TotalRequests  int           `yaml:"total_requests"`
+	Duration       time.Duration `yaml:"duration"`
+	RequestsPerSec float64       `yaml:"requests_per_sec"`
+	SuccessRate    float64       `yaml:"success_rate"`
+	ErrorCount     int           `yaml:"error_count"`
+}
+
 func setupTestServer(t *testing.T) *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -123,8 +148,11 @@ func setupTestServer(t *testing.T) *httptest.Server {
 			var reader io.Reader
 			var buff bytes.Buffer
 
+			if r.Header.Get("Content-Encoding") != "" || r.Header.Get("X-DATA") != "" {
+				t.Logf("Content-Encoding: %s", r.Header.Get("Content-Encoding"))
+				t.Logf("Content-Length: %s", r.Header.Get("Content-Length"))
+			}
 			// Decompress based on Content-Encoding and read into buffer
-			t.Logf("Content-Encoding: %s", r.Header.Get("Content-Encoding"))
 			switch r.Header.Get("Content-Encoding") {
 			case "gzip":
 				t.Log("Using gzip reader")
@@ -156,7 +184,6 @@ func setupTestServer(t *testing.T) *httptest.Server {
 				t.Log("Using LZ4 reader")
 				reader = lz4.NewReader(r.Body)
 			default:
-				t.Log("Using io.Reader")
 				reader = r.Body
 			}
 
@@ -168,8 +195,10 @@ func setupTestServer(t *testing.T) *httptest.Server {
 				return
 			}
 
-			// Once decompressed, send the data back to the client
-			t.Logf("Server file size: %d bytes", buff.Len())
+			if r.Header.Get("Content-Encoding") != "" || r.Header.Get("X-DATA") != "" {
+				// Once decompressed, send the data back to the client
+				t.Logf("Server file size: %d bytes", buff.Len())
+			}
 			_, err = w.Write(buff.Bytes())
 			if err != nil {
 				http.Error(w, "Failed to send decompressed data:"+err.Error(), http.StatusInternalServerError)
@@ -833,6 +862,7 @@ func TestRedirectPostUploadFollow(t *testing.T) {
 	opt.OnUploadProgress = func(bytesRead, totalBytes int64) {
 		if totalBytes > 0 {
 			lastProgress = float64(bytesRead) / float64(totalBytes) * 100
+			t.Logf("Upload progress: %f", lastProgress)
 		}
 	}
 
@@ -933,7 +963,7 @@ func TestRedirectFileFuncUpload(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 
 			opt := options.New()
-			opt.Redirects(true, true)
+			opt.Redirects(true, true, 5)
 			opt.EnableLogging()
 
 			var lastProgress float64
@@ -988,7 +1018,7 @@ func TestCompressedFileRedirect(t *testing.T) {
 			var err error
 
 			opt := options.New()
-			opt.Redirects(true, true) // Enable redirects and preserve method
+			opt.Redirects(true, true, 5) // Enable redirects and preserve method
 			opt.SetCompression(tt.compression)
 
 			// Track upload progress
@@ -1096,13 +1126,99 @@ func TestMultipartUpload(t *testing.T) {
 	}
 }
 
-// TestResults stores metrics from concurrent request tests
-type TestResults struct {
-	TotalRequests  int
-	Duration       time.Duration
-	RequestsPerSec float64
-	SuccessRate    float64
-	ErrorCount     int
+func TestProgressTracking(t *testing.T) {
+	server := setupTestServer(t)
+	defer server.Close()
+
+	largeLen := int64(largefile.Len())
+
+	t.Run("Upload with Progress", func(t *testing.T) {
+		var lastProgress float64
+
+		opt := options.New()
+		opt.OnUploadProgress = func(current, total int64) {
+			lastProgress = float64(current) / float64(total) * 100
+		}
+
+		resp, err := client.Post(server.URL+"/upload", smallfile.Bytes(), opt)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Equal(t, float64(100.00), lastProgress)
+		require.InDelta(t, 100.0, lastProgress, 0.1)
+	})
+
+	t.Run("Upload with Redirect", func(t *testing.T) {
+		var lastProgress float64
+		progressCalls := 0
+
+		opt := options.New().Redirects(true, true, 5)
+		opt.AddHeader("X-DATA", "upload/redirect")
+
+		opt.OnUploadProgress = func(current, total int64) {
+			t.Logf("Uploaded %d bytes", current)
+			lastProgress = float64(current) / float64(total) * 100
+			t.Logf("Uploaded: %f", lastProgress)
+			progressCalls++
+			t.Logf("Progress calls: %d", progressCalls)
+		}
+
+		resp, err := client.Post(server.URL+"/upload/redirect", smallfile.Bytes(), opt)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Equal(t, float64(100.00), lastProgress)
+		require.Greater(t, progressCalls, 0)
+	})
+
+	t.Run("Upload with Compression - Track Before Compression", func(t *testing.T) {
+		var lastProgress float64
+
+		opt := options.New()
+		opt.SetCompression(options.CompressionGzip)
+
+		opt.OnUploadProgress = func(current, total int64) {
+			lastProgress = float64(current) / float64(total) * 100
+			t.Logf("Internal buffer read upload progress: %f", lastProgress)
+		}
+
+		resp, err := client.Post(server.URL+"/upload", smallfile.Bytes(), opt)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Equal(t, float64(100.00), lastProgress)
+	})
+
+	t.Run("Upload with Compression | Track After Compression", func(t *testing.T) {
+		var lastProgress int64
+
+		opt := options.New()
+		opt.SetCompression(options.CompressionGzip).TrackAfterCompression()
+		opt.OnUploadProgress = func(current, total int64) {
+			lastProgress = current
+		}
+
+		resp, err := client.Post(server.URL+"/upload", smallfile.Bytes(), opt)
+		t.Logf("Total bytes sent (compressed bytes): %d", lastProgress)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Equal(t, int64(smallfile.Len()), resp.Len())
+	})
+
+	t.Run("Download with Progress", func(t *testing.T) {
+		var lastProgress float64
+		progressCalls := 0
+
+		opt := options.New()
+		opt.OnDownloadProgress = func(current, total int64) {
+			lastProgress = float64(current) / float64(total) * 100
+			progressCalls++
+		}
+
+		resp, err := client.Get(server.URL+"/download", opt)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		require.Equal(t, largeLen, resp.Len())
+		assert.Equal(t, float64(100.00), lastProgress)
+		require.Greater(t, progressCalls, 0)
+	})
 }
 
 func TestSharedConcurrentRequests(t *testing.T) {
@@ -1111,9 +1227,26 @@ func TestSharedConcurrentRequests(t *testing.T) {
 	// Force cleanup after each test case
 	t.Cleanup(func() {
 		server.Close()
-		// Add small delay to ensure connections close
-		time.Sleep(1 * time.Second)
+		// Instead of sleeping, we can wait for connections to drain
+		done := make(chan struct{})
+		go func() {
+			// Give connections a short time to close gracefully
+			time.Sleep(100 * time.Millisecond)
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(500 * time.Millisecond):
+			// If it takes too long, just continue
+		}
 	})
+
+	resultSet := TestResultSet{
+		Timestamp:   time.Now(),
+		TestName:    "Shared Client Concurrent Tests",
+		Environment: runtime.Version(),
+		Results:     []TestResult{},
+	}
 
 	tests := []struct {
 		name          string
@@ -1126,8 +1259,6 @@ func TestSharedConcurrentRequests(t *testing.T) {
 		{"Concurrent File Uploads (Shared)", 20, 5, "upload"},
 		{"Concurrent File Downloads (Shared)", 20, 5, "download"},
 	}
-
-	var results []TestResults
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1143,11 +1274,11 @@ func TestSharedConcurrentRequests(t *testing.T) {
 						var err error
 						switch tt.scenario {
 						case "mixed":
-							err = performMixedRequests(server.URL, routineNum, j)
+							err = performMixedRequests(server.URL, routineNum, j, nil)
 						case "upload":
-							err = performUploadRequest(server.URL, routineNum, j)
+							err = performUploadRequest(server.URL, routineNum, j, nil)
 						case "download":
-							err = performDownloadRequest(server.URL, routineNum, j)
+							err = performDownloadRequest(server.URL, routineNum, j, nil)
 						}
 						if err != nil {
 							errors <- fmt.Errorf("routine %d request %d: %w", routineNum, j, err)
@@ -1170,15 +1301,18 @@ func TestSharedConcurrentRequests(t *testing.T) {
 			successRate := float64(totalRequests-len(errs)) / float64(totalRequests) * 100
 			requestsPerSec := float64(totalRequests) / duration.Seconds()
 
-			// Create TestResults for this test
-			result := TestResults{
+			// Create TestResult
+			result := TestResult{
+				ScenarioName:   tt.name,
+				NumGoroutines:  tt.numGoroutines,
+				RequestsPerGo:  tt.requestsPerGo,
 				TotalRequests:  totalRequests,
 				Duration:       duration,
 				RequestsPerSec: requestsPerSec,
 				SuccessRate:    successRate,
 				ErrorCount:     len(errs),
 			}
-			results = append(results, result)
+			resultSet.Results = append(resultSet.Results, result)
 
 			// Log the results
 			t.Logf("\nResults for %s:", tt.name)
@@ -1193,15 +1327,12 @@ func TestSharedConcurrentRequests(t *testing.T) {
 		})
 	}
 
-	// Print comparison summary at the end
-	t.Log("\nTest Scenario Comparisons:")
-	for i, result := range results {
-		t.Logf("\n%s:", tests[i].name)
-		t.Logf("Requests/sec: %.2f", result.RequestsPerSec)
-		t.Logf("Success rate: %.2f%%", result.SuccessRate)
-		t.Logf("Total requests: %d", result.TotalRequests)
-		t.Logf("Duration: %v", result.Duration)
-		t.Logf("Error count: %d", result.ErrorCount)
+	// Add results to global slice
+	globalTestResults = append(globalTestResults, resultSet)
+
+	// Write results to file
+	if err := writeResultsToFile(resultSet); err != nil {
+		t.Errorf("Failed to write results: %v", err)
 	}
 }
 
@@ -1211,9 +1342,26 @@ func TestNonSharedConcurrentRequests(t *testing.T) {
 	// Force cleanup after each test case
 	t.Cleanup(func() {
 		server.Close()
-		// Add small delay to ensure connections close
-		time.Sleep(1 * time.Second)
+		// Instead of sleeping, we can wait for connections to drain
+		done := make(chan struct{})
+		go func() {
+			// Give connections a short time to close gracefully
+			time.Sleep(100 * time.Millisecond)
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(500 * time.Millisecond):
+			// If it takes too long, just continue
+		}
 	})
+
+	resultSet := TestResultSet{
+		Timestamp:   time.Now(),
+		TestName:    "Non-Shared Client Concurrent Tests",
+		Environment: runtime.Version(),
+		Results:     []TestResult{},
+	}
 
 	tests := []struct {
 		name          string
@@ -1221,13 +1369,12 @@ func TestNonSharedConcurrentRequests(t *testing.T) {
 		requestsPerGo int
 		scenario      string
 	}{
-		{"Light Concurrent Mixed Load (Non-Shared)", 10, 5, "mixed"},
-		{"Heavy Concurrent Mixed Load (Non-Shared)", 50, 10, "mixed"},
-		{"Concurrent File Uploads (Non-Shared)", 20, 5, "upload"},
-		{"Concurrent File Downloads (Non-Shared)", 20, 5, "download"},
+		{"Light Concurrent Mixed Load (Non Shared)", 10, 5, "mixed"},
+		{"Heavy Concurrent Mixed Load (Non Shared)", 50, 10, "mixed"},
+		{"Concurrent File Uploads (Non Shared)", 20, 5, "upload"},
+		{"Concurrent File Downloads (Non Shared)", 20, 5, "download"},
 	}
 
-	var results []TestResults
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var wg sync.WaitGroup
@@ -1239,6 +1386,7 @@ func TestNonSharedConcurrentRequests(t *testing.T) {
 				go func(routineNum int) {
 					defer wg.Done()
 					for j := 0; j < tt.requestsPerGo; j++ {
+
 						// Create options with per-request client for each request
 						opt := options.New()
 						opt.UsePerRequestClient()
@@ -1246,11 +1394,11 @@ func TestNonSharedConcurrentRequests(t *testing.T) {
 						var err error
 						switch tt.scenario {
 						case "mixed":
-							err = performMixedRequests(server.URL, routineNum, j)
+							err = performMixedRequests(server.URL, routineNum, j, opt)
 						case "upload":
-							err = performUploadRequest(server.URL, routineNum, j)
+							err = performUploadRequest(server.URL, routineNum, j, opt)
 						case "download":
-							err = performDownloadRequest(server.URL, routineNum, j)
+							err = performDownloadRequest(server.URL, routineNum, j, opt)
 						}
 						if err != nil {
 							errors <- fmt.Errorf("routine %d request %d: %w", routineNum, j, err)
@@ -1273,14 +1421,18 @@ func TestNonSharedConcurrentRequests(t *testing.T) {
 			successRate := float64(totalRequests-len(errs)) / float64(totalRequests) * 100
 			requestsPerSec := float64(totalRequests) / duration.Seconds()
 
-			result := TestResults{
+			// Create TestResult
+			result := TestResult{
+				ScenarioName:   tt.name,
+				NumGoroutines:  tt.numGoroutines,
+				RequestsPerGo:  tt.requestsPerGo,
 				TotalRequests:  totalRequests,
 				Duration:       duration,
 				RequestsPerSec: requestsPerSec,
 				SuccessRate:    successRate,
 				ErrorCount:     len(errs),
 			}
-			results = append(results, result)
+			resultSet.Results = append(resultSet.Results, result)
 
 			// Log the results
 			t.Logf("\nResults for %s:", tt.name)
@@ -1294,22 +1446,22 @@ func TestNonSharedConcurrentRequests(t *testing.T) {
 		})
 	}
 
-	// Print comparison summary
-	t.Log("\nTest Scenario Comparisons (Non-Shared Clients):")
-	for i, result := range results {
-		t.Logf("\n%s:", tests[i].name)
-		t.Logf("Requests/sec: %.2f", result.RequestsPerSec)
-		t.Logf("Success rate: %.2f%%", result.SuccessRate)
-		t.Logf("Total requests: %d", result.TotalRequests)
-		t.Logf("Duration: %v", result.Duration)
-		t.Logf("Error count: %d", result.ErrorCount)
+	// Add results to global slice
+	globalTestResults = append(globalTestResults, resultSet)
+
+	// Write results to file
+	if err := writeResultsToFile(resultSet); err != nil {
+		t.Errorf("Failed to write results: %v", err)
 	}
 }
 
-func performMixedRequests(baseURL string, routineNum, reqNum int) error {
+func performMixedRequests(baseURL string, routineNum, reqNum int, opts *options.Option) error {
+	// Create new options for this request
+	opt := options.New(opts)
+
 	switch reqNum % 3 {
 	case 0:
-		resp, err := client.Get(baseURL + "/echo-headers")
+		resp, err := client.Get(baseURL+"/echo-headers", opt)
 		if err != nil {
 			return err
 		}
@@ -1317,7 +1469,6 @@ func performMixedRequests(baseURL string, routineNum, reqNum int) error {
 			return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
 		}
 	case 1:
-		opt := options.New()
 		opt.AddHeader(fmt.Sprintf("X-Test-%d-%d", routineNum, reqNum), "test")
 		resp, err := client.Post(baseURL+"/upload", []byte("test data"), opt)
 		if err != nil {
@@ -1327,9 +1478,8 @@ func performMixedRequests(baseURL string, routineNum, reqNum int) error {
 			return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
 		}
 	case 2:
-		opt := options.New()
 		opt.SetBufferOutput()
-		resp, err := client.Get(baseURL + "/download")
+		resp, err := client.Get(baseURL+"/download", opt)
 		if err != nil {
 			return err
 		}
@@ -1340,14 +1490,14 @@ func performMixedRequests(baseURL string, routineNum, reqNum int) error {
 	return nil
 }
 
-func performUploadRequest(baseURL string, routineNum, reqNum int) error {
+func performUploadRequest(baseURL string, routineNum, reqNum int, opts *options.Option) error {
 	file, err := os.Open(smallf) // Using the small file for quicker tests
 	if err != nil {
 		return fmt.Errorf("failed to open file: %w", err)
 	}
 	defer file.Close()
 
-	opt := options.New()
+	opt := options.New(opts)
 	opt.AddHeader(fmt.Sprintf("X-Upload-Test-%d-%d", routineNum, reqNum), "test")
 
 	resp, err := client.Post(baseURL+"/upload", file, opt)
@@ -1360,8 +1510,8 @@ func performUploadRequest(baseURL string, routineNum, reqNum int) error {
 	return nil
 }
 
-func performDownloadRequest(baseURL string, routineNum, reqNum int) error {
-	opt := options.New()
+func performDownloadRequest(baseURL string, routineNum, reqNum int, opts *options.Option) error {
+	opt := options.New(opts)
 	tempDir := os.TempDir()
 	downloadPath := filepath.Join(tempDir, fmt.Sprintf("download-%d-%d.txt", routineNum, reqNum))
 	opt.SetFileOutput(downloadPath)
@@ -1375,4 +1525,140 @@ func performDownloadRequest(baseURL string, routineNum, reqNum int) error {
 		return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
 	}
 	return nil
+}
+
+func TestResultsAnalysis(t *testing.T) {
+	t.Log("\nAnalyzing all test results:")
+
+	if len(globalTestResults) < 2 {
+		t.Log("Not enough test sets to perform analysis")
+		return
+	}
+
+	// Group results by base scenario name
+	scenarioComparisons := make(map[string]struct {
+		shared    TestResult
+		nonShared TestResult
+	})
+
+	// Process shared client results
+	for _, result := range globalTestResults[0].Results {
+		baseScenario := strings.TrimSuffix(result.ScenarioName, " (Shared)")
+		scenarioComparisons[baseScenario] = struct {
+			shared    TestResult
+			nonShared TestResult
+		}{shared: result}
+	}
+
+	// Process non-shared client results
+	for _, result := range globalTestResults[1].Results {
+		baseScenario := strings.TrimSuffix(result.ScenarioName, " (Non-Shared)")
+		if comp, exists := scenarioComparisons[baseScenario]; exists {
+			comp.nonShared = result
+			scenarioComparisons[baseScenario] = comp
+		}
+	}
+
+	var analysisResults []TestResult
+
+	// Analyze and collect results
+	for scenario, comp := range scenarioComparisons {
+		// Calculate throughput difference (negative if non-shared is worse)
+		throughputDiff := ((comp.nonShared.RequestsPerSec - comp.shared.RequestsPerSec) / comp.shared.RequestsPerSec) * 100
+		throughputDiff = math.Round(throughputDiff*100) / 100 // Round to 2 decimal places
+
+		// Calculate duration improvement
+		durationImprov := ((comp.shared.Duration.Seconds() - comp.nonShared.Duration.Seconds()) / comp.shared.Duration.Seconds()) * 100
+		durationImprov = math.Round(durationImprov*100) / 100 // Round to 2 decimal places
+
+		// Create analysis result
+		analysisResult := TestResult{
+			ScenarioName:   fmt.Sprintf("%s (Analysis)", scenario),
+			NumGoroutines:  comp.shared.NumGoroutines,
+			RequestsPerGo:  comp.shared.RequestsPerGo,
+			TotalRequests:  comp.shared.TotalRequests,
+			Duration:       comp.shared.Duration,
+			RequestsPerSec: throughputDiff, // Store raw throughput diff
+			SuccessRate:    durationImprov, // Store raw duration improvement
+			ErrorCount:     0,
+		}
+		analysisResults = append(analysisResults, analysisResult)
+
+		// Log detailed comparison
+		t.Logf("\nScenario: %s", scenario)
+		t.Logf("Performance Comparison:")
+		t.Logf("Requests/sec: Shared=%.2f, Non-Shared=%.2f (%.2f%% %s)",
+			comp.shared.RequestsPerSec,
+			comp.nonShared.RequestsPerSec,
+			math.Abs(throughputDiff),
+			func() string {
+				if throughputDiff >= 0 {
+					return "improvement"
+				}
+				return "decrease"
+			}())
+		t.Logf("Duration: Shared=%v, Non-Shared=%v (%.2f%% %s)",
+			comp.shared.Duration,
+			comp.nonShared.Duration,
+			math.Abs(durationImprov),
+			func() string {
+				if durationImprov >= 0 {
+					return "faster"
+				}
+				return "slower"
+			}())
+		t.Logf("Success rate: Both achieved %.0f%%",
+			comp.shared.SuccessRate)
+
+		// Assertions - check that performance doesn't degrade by more than 25%
+		assert.GreaterOrEqual(t, throughputDiff, -25.0,
+			"Non-shared client performance degraded by more than 25%%")
+
+		// Success rates should be within 5% of each other
+		assert.InDelta(t, comp.shared.SuccessRate, comp.nonShared.SuccessRate, 5.0,
+			"Success rates should be within 5%% of each other")
+	}
+
+	// Write analysis results
+	analysisResult := TestResultSet{
+		Timestamp:   time.Now(),
+		TestName:    "Performance Analysis Summary",
+		Environment: runtime.Version(),
+		Results:     analysisResults,
+	}
+
+	if err := writeResultsToFile(analysisResult); err != nil {
+		t.Errorf("Failed to write analysis results: %v", err)
+	}
+}
+
+func writeResultsToFile(resultSet TestResultSet) error {
+	dir := "test_results"
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+
+	filename := filepath.Join(dir, "performance_results.yaml")
+
+	// Open file in append mode
+	f, err := os.OpenFile(filename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	data, err := yaml.Marshal(resultSet)
+	if err != nil {
+		return err
+	}
+
+	// Write document separator and data
+	if _, err := f.WriteString("---\n"); err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		return err
+	}
+
+	return f.Sync() // Ensure data is written to disk
 }

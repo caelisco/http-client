@@ -147,11 +147,24 @@ func doRequest(method string, url string, payload any, opts ...*options.Option) 
 
 		// Handle the redirect
 		if opt.PreserveMethodOnRedirect {
-			// For preserved methods, we need to prepare a new payload reader
+			var newPayload any
+
+			// If we have a file handle, reopen it
 			if opt.HasFileHandle() {
 				opt.ReopenFile()
+			} else if payload != nil {
+				// For non-file payloads, recreate them
+				switch v := payload.(type) {
+				case []byte:
+					newPayload = v // Original byte slice can be reused
+				case *bytes.Buffer:
+					newPayload = bytes.NewBuffer(v.Bytes()) // Create new buffer with original content
+				case string:
+					newPayload = v // Original string can be reused
+				}
 			}
-			return doRequest(method, nextURL, nil, opt)
+
+			return doRequest(method, nextURL, newPayload, opt)
 		}
 
 		// Switch to GET method as per HTTP spec for other redirects
@@ -175,42 +188,33 @@ func isRedirect(statusCode int) bool {
 // prepareRequest creates and configures the HTTP request
 // This function handles the creation of the request, including setting up progress tracking
 // and compression if needed.
-//
-// Parameters:
-// - method: The HTTP method for the request
-// - url: The target URL
-// - payloadReader: An io.Reader containing the request payload (can be nil)
-// - contentLength: The length of the payload content
-// - opt: Options for configuring the request
-//
-// Returns:
-// - *http.Request: The prepared HTTP request
-// - error: Any error encountered during request preparation
 func prepareRequest(method, url string, payloadReader io.Reader, contentLength int64, opt *options.Option) (*http.Request, error) {
-	var finalReader io.Reader = payloadReader
+	var reader io.Reader = payloadReader
 
-	// Handle progress tracking only if we have a payload
-	if payloadReader != nil && opt.OnUploadProgress != nil &&
+	if reader != nil && opt.OnUploadProgress != nil &&
 		(method == http.MethodPost || method == http.MethodPut || method == http.MethodPatch) {
 
-		// Check if the reader is already a progressReader from a redirect
-		if pr, ok := payloadReader.(*options.ProgressReader); ok {
-			finalReader = pr.CloneForRedirect()
-		} else {
-			finalReader = options.NewProgressReader(payloadReader, contentLength, opt.OnUploadProgress)
+		if opt.GetProgressTracking() == options.TrackBeforeCompression {
+			// Track before compression - use original size
+			var totalSize int64 = contentLength
+			if sizer, ok := payloadReader.(io.Seeker); ok {
+				if size, err := sizer.Seek(0, io.SeekEnd); err == nil {
+					sizer.Seek(0, io.SeekStart)
+					totalSize = size
+				}
+			}
+			reader = options.NewProgressReader(payloadReader, totalSize, opt.OnUploadProgress)
 		}
 	}
 
-	// Handle compression only if we have a payload
-	if finalReader != nil && opt.Compression != options.CompressionNone {
+	// Handle compression
+	if reader != nil && opt.Compression != options.CompressionNone {
 		pr, pw := io.Pipe()
-		go compressData(pw, finalReader, opt)
-
-		finalReader = pr
+		go compressData(pw, reader, opt)
+		reader = pr
 		// Update headers for compression
 		opt.Header.Set("Transfer-Encoding", "chunked")
 		opt.Header.Del("Content-Length")
-
 		if opt.Compression != options.CompressionCustom {
 			opt.Header.Set(ContentEncoding, string(opt.Compression))
 		} else if opt.CustomCompressionType != "" {
@@ -220,22 +224,22 @@ func prepareRequest(method, url string, payloadReader io.Reader, contentLength i
 		}
 	}
 
+	// Add progress tracking after compression if specified
+	if reader != nil && opt.OnUploadProgress != nil &&
+		(method == http.MethodPost || method == http.MethodPut || method == http.MethodPatch) &&
+		opt.GetProgressTracking() == options.TrackAfterCompression {
+		// Track after compression - use -1 for unknown size
+		reader = options.NewProgressReader(reader, 0, opt.OnUploadProgress)
+	}
+
 	// Create the request
-	req, err := http.NewRequest(method, url, finalReader)
+	req, err := http.NewRequest(method, url, reader)
 	if err != nil {
 		return nil, err
 	}
 
-	// If we have a progress reader, set up GetBody for redirects
-	if pr, ok := finalReader.(*options.ProgressReader); ok {
-		req.GetBody = func() (io.ReadCloser, error) {
-			clone := pr.CloneForRedirect()
-			return io.NopCloser(clone), nil
-		}
-	}
-
 	// Set content length for requests with no body or uncompressed body
-	if finalReader == nil {
+	if reader == nil {
 		req.ContentLength = 0
 	} else if opt.Compression == options.CompressionNone {
 		req.ContentLength = contentLength
@@ -246,18 +250,12 @@ func prepareRequest(method, url string, payloadReader io.Reader, contentLength i
 	for _, cookie := range opt.Cookies {
 		req.AddCookie(cookie)
 	}
-
 	return req, nil
 }
 
 // compressData handles the compression of request data
 // This function runs in a separate goroutine to compress the request payload
 // before sending it to the server.
-//
-// Parameters:
-// - pw: A PipeWriter to write the compressed data to
-// - reader: The original uncompressed data reader
-// - opt: Options containing compression settings
 func compressData(pw *io.PipeWriter, reader io.Reader, opt *options.Option) {
 	defer pw.Close()
 
@@ -284,16 +282,6 @@ func compressData(pw *io.PipeWriter, reader io.Reader, opt *options.Option) {
 // processResponse handles the final response processing
 // This function processes the HTTP response, including handling the response body,
 // tracking download progress, and populating the response struct.
-//
-// Parameters:
-// - r: The raw HTTP response
-// - resp: The response struct to be populated
-// - opt: Options for processing the response
-// - startTime: The time when the request was initiated
-//
-// Returns:
-// - response.Response: The processed response
-// - error: Any error encountered during response processing
 func processResponse(r *http.Response, resp response.Response, opt *options.Option, startTime time.Time) (response.Response, error) {
 	defer r.Body.Close()
 
@@ -320,6 +308,11 @@ func processResponse(r *http.Response, resp response.Response, opt *options.Opti
 	// Track progress at the read level instead of write level
 	var reader io.Reader = decompressedBody
 	if opt.OnDownloadProgress != nil {
+		if encoding != "" {
+			// For compressed content, we won't know the final size until we read it all
+			// so we pass -1 to indicate unknown size
+			totalSize = -1
+		}
 		reader = options.NewProgressReader(decompressedBody, totalSize, opt.OnDownloadProgress)
 	}
 
@@ -349,17 +342,6 @@ func processResponse(r *http.Response, resp response.Response, opt *options.Opti
 
 // MultipartUpload performs a multipart form-data upload request to the specified URL.
 // It supports file uploads and other form fields.
-//
-// Parameters:
-//   - method: The HTTP method to use for the request (e.g., "POST", "PUT", "PATCH").
-//   - url: The target URL for the upload.
-//   - payload: A map containing the form fields and file pointers to upload.
-//     For file uploads, use *os.File as the value.
-//   - opts: Optional parameters for the request (e.g., headers, timeout).
-//
-// Returns:
-//   - response.Response: The response from the server.
-//   - error: Any error encountered during the request.
 func MultipartUpload(method, url string, payload map[string]any, opts ...*options.Option) (response.Response, error) {
 	opt := options.New(opts...)
 	body := &bytes.Buffer{}
@@ -440,16 +422,6 @@ func PostFile(url string, filename string, opts ...*options.Option) (response.Re
 
 // PostMultipartUpload performs a POST multipart form-data upload request to the specified URL.
 // This is the most common method for file uploads and creating new resources with file attachments.
-//
-// Parameters:
-//   - url: The target URL for the upload.
-//   - payload: A map containing the form fields and file pointers to upload.
-//     For file uploads, use *os.File as the value.
-//   - opts: Optional parameters for the request (e.g., headers, timeout).
-//
-// Returns:
-//   - response.Response: The response from the server.
-//   - error: Any error encountered during the request.
 func PostMultipartUpload(url string, payload map[string]interface{}, opts ...*options.Option) (response.Response, error) {
 	return MultipartUpload(http.MethodPost, url, payload, opts...)
 }
@@ -494,16 +466,6 @@ func PutFile(url string, filename string, opts ...*options.Option) (response.Res
 // PutMultipartUpload performs a PUT multipart form-data upload request to the specified URL.
 // This method is less common but can be used when updating an entire resource with new data,
 // including file attachments.
-//
-// Parameters:
-//   - url: The target URL for the upload.
-//   - payload: A map containing the form fields and file pointers to upload.
-//     For file uploads, use *os.File as the value.
-//   - opts: Optional parameters for the request (e.g., headers, timeout).
-//
-// Returns:
-//   - response.Response: The response from the server.
-//   - error: Any error encountered during the request.
 func PutMultipartUpload(url string, payload map[string]interface{}, opts ...*options.Option) (response.Response, error) {
 	return MultipartUpload(http.MethodPut, url, payload, opts...)
 }
@@ -548,16 +510,6 @@ func PatchFile(url string, filename string, opts ...*options.Option) (response.R
 // PatchMultipartUpload performs a PATCH multipart form-data upload request to the specified URL.
 // This method can be used for partial updates to a resource, which might include updating or
 // adding new file attachments.
-//
-// Parameters:
-//   - url: The target URL for the upload.
-//   - payload: A map containing the form fields and file pointers to upload.
-//     For file uploads, use *os.File as the value.
-//   - opts: Optional parameters for the request (e.g., headers, timeout).
-//
-// Returns:
-//   - response.Response: The response from the server.
-//   - error: Any error encountered during the request.
 func PatchMultipartUpload(url string, payload map[string]interface{}, opts ...*options.Option) (response.Response, error) {
 	return MultipartUpload(http.MethodPatch, url, payload, opts...)
 }

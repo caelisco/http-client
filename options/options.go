@@ -40,6 +40,13 @@ const (
 	CompressionCustom  CompressionType = "custom"  // Custom compression implementation
 )
 
+type ProgressTracking int
+
+const (
+	TrackBeforeCompression ProgressTracking = iota
+	TrackAfterCompression
+)
+
 // UniqueIdentifierType defines the type of unique identifier to use for request tracing.
 // It supports both UUID and ULID formats.
 type UniqueIdentifierType string
@@ -91,6 +98,7 @@ type Option struct {
 	ResponseWriter           ResponseWriter                                 // Define the type of response writer
 	UploadBufferSize         *int                                           // Control the size of the buffer when uploading a file
 	DownloadBufferSize       *int                                           // Control the size of the buffer when downloading a file
+	progressTracking         ProgressTracking                               // Override the type of progress tracking. Default: Bytes Read
 	OnUploadProgress         func(bytesRead, totalBytes int64)              // To monitor and track progress when uploading
 	OnDownloadProgress       func(bytesRead, totalBytes int64)              // To monitor and track progress when downloading
 }
@@ -124,6 +132,7 @@ func defaultOption() *Option {
 		Logger:                   *slog.New(slog.NewTextHandler(os.Stdout, nil)),
 		Header:                   http.Header{},
 		Compression:              CompressionNone,
+		progressTracking:         TrackBeforeCompression,
 		UserAgent:                ua,
 		FollowRedirects:          false,
 		PreserveMethodOnRedirect: false,
@@ -136,6 +145,7 @@ func defaultOption() *Option {
 	}
 }
 
+// cloneTransport creates a clone of http.DefaultTransport
 func cloneTransport() *http.Transport {
 	return http.DefaultTransport.(*http.Transport).Clone()
 }
@@ -144,19 +154,20 @@ func cloneTransport() *http.Transport {
 // If a custom client has been set via SetClient, that client is returned.
 // Otherwise, returns a new default http.Client instance.
 func (opt *Option) GetClient() *http.Client {
+	opt.mu.Lock()
+	defer opt.mu.Unlock()
+
 	if opt.useSharedClient {
 		return http.DefaultClient
 	}
 
-	// If a custom client was set, use it
-	if opt.client != nil {
-		return opt.client
-	}
-
-	// Create a new client for non-shared, non-custom case
-	opt.client = &http.Client{
-		Transport: cloneTransport(),
-		Timeout:   30 * time.Second,
+	// For per-request client or custom client cases
+	if opt.client == nil {
+		// Create new client only if we're not using shared client
+		opt.client = &http.Client{
+			Transport: cloneTransport(),
+			Timeout:   30 * time.Second,
+		}
 	}
 	return opt.client
 }
@@ -236,12 +247,13 @@ func (opt *Option) SetLogger(logger *slog.Logger) {
 // AddHeader adds a new header with the specified key and value to the request headers.
 // If the headers map hasn't been initialized, it will be created.
 // Kept for backwards compatability
-func (opt *Option) AddHeader(key string, value string) {
+func (opt *Option) AddHeader(key string, value string) *Option {
 	if opt.Header == nil {
 		opt.Header = http.Header{}
 	}
 	// Use set over add to replace the key with the value
 	opt.Header.Set(key, value)
+	return opt
 }
 
 // ClearHeaders removes all previously set headers from the Option.
@@ -251,11 +263,12 @@ func (opt *Option) ClearHeaders() {
 
 // AddCookie adds a new cookie to the Option's cookie collection.
 // If the cookie slice hasn't been initialized, it will be created.
-func (opt *Option) AddCookie(cookie *http.Cookie) {
+func (opt *Option) AddCookie(cookie *http.Cookie) *Option {
 	if opt.Cookies == nil {
 		opt.Cookies = []*http.Cookie{}
 	}
 	opt.Cookies = append(opt.Cookies, cookie)
+	return opt
 }
 
 // ClearCookies removes all previously set cookies from the Option.
@@ -288,6 +301,9 @@ func (opt *Option) CreatePayloadReader(payload any) (io.Reader, int64, error) {
 		// Byte slice payload, return bytes.Reader and its length
 		opt.Log("Setting payload reader", "reader", "bytes.Reader")
 		return bytes.NewReader(v), int64(len(v)), nil
+	case *bytes.Buffer:
+		opt.Log("Setting payload reader", "reader", "bytes.Buffer")
+		return v, int64(v.Len()), nil
 	case io.Reader:
 		// io.Reader payload, determine size if possible using io.Seeker
 		size := int64(-1)
@@ -452,8 +468,9 @@ func (opt *Option) InferContentType(file *os.File, fileInfo os.FileInfo) error {
 
 // SetCompression configures the compression type to be used for the request.
 // Valid compression types include: none, gzip, deflate, brotli, and custom.
-func (opt *Option) SetCompression(compressionType CompressionType) {
+func (opt *Option) SetCompression(compressionType CompressionType) *Option {
 	opt.Compression = compressionType
+	return opt
 }
 
 // GetCompressor returns an appropriate io.WriteCloser based on the configured compression type.
@@ -504,33 +521,66 @@ func (opt *Option) GetDecompressor(r io.ReadCloser, encoding string) (io.ReadClo
 	}
 }
 
-func (opt *Option) Redirects(enabled bool, preserve bool) {
+// TrackBeforeCompression sets progress tracking to occur before data compression.
+// This tracks the original data size but may not reflect final transfer size.
+func (opt *Option) TrackBeforeCompression() *Option {
+	opt.progressTracking = TrackBeforeCompression
+	return opt
+}
+
+// TrackAfterCompression sets progress tracking to occur after data compression.
+// This tracks actual transfer size but not original data size.
+func (opt *Option) TrackAfterCompression() *Option {
+	opt.progressTracking = TrackAfterCompression
+	return opt
+}
+
+// GetProgressTracking returns the current progress tracking setting.
+func (opt *Option) GetProgressTracking() ProgressTracking {
+	return opt.progressTracking
+}
+
+// Redirects configures HTTP redirect behavior.
+// enabled - whether to follow redirects
+// preserve - whether to preserve the original HTTP method on redirect
+// max - maximum number of redirects to follow (defaults to 5 if 0)
+func (opt *Option) Redirects(enabled bool, preserve bool, max int) *Option {
 	opt.FollowRedirects = enabled
 	opt.PreserveMethodOnRedirect = preserve
+	if max == 0 {
+		max = 5
+	}
+	opt.MaxRedirects = max
+	return opt
 }
 
 // EnableRedirects configures the Option to follow HTTP redirects.
-func (opt *Option) EnableRedirects() {
+func (opt *Option) EnableRedirects() *Option {
 	opt.FollowRedirects = true
+	return opt
 }
 
 // DisableRedirects configures the Option to not follow HTTP redirects.
-func (opt *Option) DisableRedirects() {
+func (opt *Option) DisableRedirects() *Option {
 	opt.FollowRedirects = false
+	return opt
 }
 
 // EnablePreserveMethodOnRedirect configures redirects to maintain the original HTTP method.
-func (opt *Option) EnablePreserveMethodOnRedirect() {
+func (opt *Option) EnablePreserveMethodOnRedirect() *Option {
 	opt.PreserveMethodOnRedirect = true
+	return opt
 }
 
 // DisablePreserveMethodOnRedirect configures redirects to not maintain the original HTTP method.
-func (opt *Option) DisablePreserveMethodOnRedirect() {
+func (opt *Option) DisablePreserveMethodOnRedirect() *Option {
 	opt.PreserveMethodOnRedirect = false
+	return opt
 }
 
-func (opt *Option) SetMaxRedirects(size int) {
+func (opt *Option) SetMaxRedirects(size int) *Option {
 	opt.MaxRedirects = size
+	return opt
 }
 
 func (opt *Option) GetMaxRedirects() int {
