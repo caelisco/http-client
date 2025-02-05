@@ -44,10 +44,11 @@ func doRequest(method string, url string, payload any, opts ...*options.Option) 
 
 	// Initialise options, combining defaults with user-provided options
 	opt := options.New(opts...)
+	opt.AddHeader("User-Agent", opt.UserAgent)
 
 	// Set up initial request parameters
 	if opt.UniqueIdentifierType != options.IdentifierNone {
-		opt.AddHeader("X-TraceID", opt.GenerateIdentifier())
+		opt.AddHeader("X-Trace-ID", opt.GenerateIdentifier())
 	}
 
 	// Get the *http.Client for this request.

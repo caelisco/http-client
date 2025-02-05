@@ -24,7 +24,7 @@ import (
 )
 
 // ua defines the default User-Agent string for requests
-const ua = "caelisco/http-client/v2.0.0"
+const ua = "caelisco/http-client/v2.1.1"
 
 // CompressionType defines the compression algorithm used for HTTP requests.
 // It supports standard compression types (gzip, deflate, brotli) as well as
